@@ -1,0 +1,25 @@
+# Docs (personal notes/plans)
+docs/
+
+# Models (weights)
+models/
+*.safetensors
+*.ckpt
+*.pt
+*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+
+# macOS
+.DS_Store
+
+# AI cache
+_AI_CACHE/
+_AI_OUT/
+CLAUDE.md
