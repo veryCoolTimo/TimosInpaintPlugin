@@ -60,22 +60,42 @@ class DiffusersEngine(BaseEngine):
             logger.info("Model already loaded")
             return
 
-        logger.info(f"Loading SDXL Inpainting model: {self.model_id}")
+        logger.info(f"Loading Inpainting model: {self.model_id}")
 
-        from diffusers import AutoPipelineForInpainting
+        from diffusers import StableDiffusionInpaintPipeline
 
-        # Загружаем основной пайплайн
-        self.pipe = AutoPipelineForInpainting.from_pretrained(
-            self.model_id,
-            torch_dtype=torch.float16 if self.device != "cpu" else torch.float32,
-            variant="fp16" if self.device != "cpu" else None,
-        )
+        # Check if loading from local .ckpt file or HuggingFace
+        is_local_ckpt = self.model_id.endswith('.ckpt') or self.model_id.endswith('.safetensors')
+
+        # MPS (Apple Silicon) REQUIRES float32 - float16 causes NaN values
+        dtype = torch.float32 if self.device in ["mps", "cpu"] else torch.float16
+
+        if is_local_ckpt:
+            logger.info(f"Loading from local checkpoint: {self.model_id}")
+            self.pipe = StableDiffusionInpaintPipeline.from_single_file(
+                self.model_id,
+                torch_dtype=dtype,
+                safety_checker=None,
+            )
+        else:
+            logger.info(f"Loading from HuggingFace: {self.model_id}")
+            self.pipe = StableDiffusionInpaintPipeline.from_pretrained(
+                self.model_id,
+                torch_dtype=dtype,
+                safety_checker=None,
+                local_files_only=True,
+            )
 
         self.pipe.to(self.device)
 
         # Оптимизации для Mac
         if self.device == "mps":
             self.pipe.enable_attention_slicing()
+            # Note: VAE tiling causes tensor shape errors on MPS, so we don't enable it
+            # float32 alone should prevent NaN issues
+            # Disable safety checker (often causes issues on MPS)
+            self.pipe.safety_checker = None
+            logger.info("MPS optimizations enabled: attention_slicing, safety_checker disabled")
 
         # Загружаем ControlNet если указан
         if self.controlnet_id:

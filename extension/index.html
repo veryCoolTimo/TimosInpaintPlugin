@@ -11,18 +11,18 @@
         <!-- Header -->
         <div class="header">
             <h1>AE Inpaint</h1>
-            <div id="server-status" class="status-indicator offline">
-                <span class="status-dot"></span>
-                <span class="status-text">Offline</span>
-            </div>
         </div>
 
         <!-- Main Action -->
         <div class="section">
-            <button id="btn-inpaint" class="btn btn-primary btn-large" disabled>
-                <span class="btn-icon">🎨</span>
-                Inpaint
-            </button>
+            <div class="btn-row">
+                <button id="btn-inpaint" class="btn btn-primary btn-large">
+                    Inpaint
+                </button>
+                <button id="btn-stop" class="btn btn-danger hidden">
+                    Stop
+                </button>
+            </div>
         </div>
 
         <!-- Prompt -->
@@ -31,52 +31,54 @@
             <textarea id="prompt" placeholder="e.g., clean background, continue wall tiles..."></textarea>
         </div>
 
-        <!-- Settings -->
-        <div class="section collapsible">
-            <div class="section-header" onclick="toggleSection(this)">
-                <span>Settings</span>
-                <span class="arrow">▼</span>
+        <!-- Settings Toggle -->
+        <div class="section">
+            <button id="btn-toggle-settings" class="btn btn-secondary btn-small">
+                Settings
+            </button>
+        </div>
+
+        <!-- Settings Panel (hidden by default) -->
+        <div class="section settings-panel hidden" id="settings-panel">
+            <div class="setting">
+                <label for="strength">Strength</label>
+                <div class="slider-container">
+                    <input type="range" id="strength" min="0.5" max="1.0" step="0.05" value="0.85">
+                    <span id="strength-value">0.85</span>
+                </div>
             </div>
-            <div class="section-content">
-                <div class="setting">
-                    <label for="strength">Strength</label>
-                    <div class="slider-container">
-                        <input type="range" id="strength" min="0.5" max="1.0" step="0.05" value="0.85">
-                        <span id="strength-value">0.85</span>
-                    </div>
-                </div>
 
-                <div class="setting">
-                    <label for="guidance">Guidance Scale</label>
-                    <div class="slider-container">
-                        <input type="range" id="guidance" min="1" max="15" step="0.5" value="7.5">
-                        <span id="guidance-value">7.5</span>
-                    </div>
+            <div class="setting">
+                <label for="guidance">Guidance Scale</label>
+                <div class="slider-container">
+                    <input type="range" id="guidance" min="1" max="15" step="0.5" value="7.5">
+                    <span id="guidance-value">7.5</span>
                 </div>
+            </div>
 
-                <div class="setting">
-                    <label for="steps">Steps</label>
-                    <div class="slider-container">
-                        <input type="range" id="steps" min="10" max="50" step="5" value="30">
-                        <span id="steps-value">30</span>
-                    </div>
-                </div>
+            <div class="setting">
+                <label for="steps">Steps</label>
+                <input type="number" id="steps" min="5" max="100" value="30" class="input-small">
+            </div>
 
-                <div class="setting">
-                    <label for="feather">Mask Feather (px)</label>
-                    <div class="slider-container">
-                        <input type="range" id="feather" min="0" max="20" step="1" value="0">
-                        <span id="feather-value">0</span>
-                    </div>
-                </div>
+            <div class="divider"></div>
 
-                <div class="setting">
-                    <label for="expand">Mask Expand (px)</label>
-                    <div class="slider-container">
-                        <input type="range" id="expand" min="0" max="20" step="1" value="0">
-                        <span id="expand-value">0</span>
-                    </div>
+            <div class="setting">
+                <label>Debug</label>
+                <div class="btn-group">
+                    <button id="btn-debug" class="btn btn-secondary btn-small">
+                        Export Debug
+                    </button>
+                    <button id="btn-clear-cache" class="btn btn-secondary btn-small">
+                        Clear Cache
+                    </button>
                 </div>
+            </div>
+
+            <div class="setting">
+                <button id="btn-debug-mode" class="btn btn-secondary btn-small" style="width: 100%;">
+                    CEP Debug: ON
+                </button>
             </div>
         </div>
 
@@ -84,18 +86,6 @@
         <div class="section">
             <div class="log-container">
                 <div id="log"></div>
-            </div>
-        </div>
-
-        <!-- Debug -->
-        <div class="section">
-            <div class="btn-group">
-                <button id="btn-debug" class="btn btn-secondary btn-small">
-                    Export Debug
-                </button>
-                <button id="btn-clear-cache" class="btn btn-secondary btn-small">
-                    Clear Cache
-                </button>
             </div>
         </div>
     </div>

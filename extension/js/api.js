@@ -4,7 +4,7 @@
 
 const API = {
     baseUrl: 'http://127.0.0.1:7860',
-    timeout: 300000, // 5 минут для inference
+    timeout: 1800000, // 30 минут для первого запуска (загрузка модели)
 
     /**
      * Проверка здоровья сервера
@@ -69,8 +69,6 @@ const API = {
             guidance_scale: settings.guidance || 7.5,
             num_steps: settings.steps || 30,
             controlnet_scale: settings.controlnetScale || 0.5,
-            feather: settings.feather || 0,
-            expand: settings.expand || 0,
             seed: settings.seed || null,
             cache_dir: cacheDir || null
         };
@@ -125,16 +123,49 @@ const API = {
  * Конвертация файла в Base64
  */
 async function fileToBase64(filePath) {
-    return new Promise((resolve, reject) => {
-        const fs = require('fs');
-        fs.readFile(filePath, (err, data) => {
-            if (err) {
-                reject(err);
-                return;
+    const fs = require('fs');
+
+    // Wait a bit for file to be fully written by ExtendScript
+    await new Promise(r => setTimeout(r, 500));
+
+    // Use synchronous reading to avoid race conditions
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+        attempts++;
+
+        try {
+            const stats = fs.statSync(filePath);
+            if (stats.size === 0) {
+                console.log(`File empty, retry ${attempts}/${maxAttempts}: ${filePath}`);
+                await new Promise(r => setTimeout(r, 300));
+                continue;
             }
-            resolve(data.toString('base64'));
-        });
-    });
+
+            console.log(`Reading file: ${filePath} (${stats.size} bytes)`);
+
+            // Synchronous read to avoid race conditions
+            const buffer = fs.readFileSync(filePath);
+
+            // Verify size matches
+            if (buffer.length !== stats.size) {
+                console.error(`Read mismatch: got ${buffer.length}, expected ${stats.size}, retrying...`);
+                await new Promise(r => setTimeout(r, 300));
+                continue;
+            }
+
+            const b64 = buffer.toString('base64');
+            console.log(`Buffer size: ${buffer.length}, Base64 length: ${b64.length}`);
+            return b64;
+
+        } catch (e) {
+            console.log(`File error, retry ${attempts}/${maxAttempts}: ${e.message}`);
+            await new Promise(r => setTimeout(r, 300));
+        }
+    }
+
+    throw new Error(`Failed to read file after ${maxAttempts} attempts: ${filePath}`);
 }
 
 /**
@@ -143,6 +174,14 @@ async function fileToBase64(filePath) {
 async function base64ToFile(base64Data, filePath) {
     return new Promise((resolve, reject) => {
         const fs = require('fs');
+        const path = require('path');
+
+        // Create directory if it doesn't exist
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
         const buffer = Buffer.from(base64Data, 'base64');
         fs.writeFile(filePath, buffer, (err) => {
             if (err) {

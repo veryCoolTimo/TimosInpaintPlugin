@@ -133,6 +133,24 @@ body {
     background-color: var(--border);
 }
 
+.btn-danger {
+    background-color: var(--danger);
+    color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+    background-color: #c82333;
+}
+
+.btn-row {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-row .btn-primary {
+    flex: 1;
+}
+
 .btn-large {
     padding: 14px 20px;
     font-size: 14px;
@@ -175,6 +193,22 @@ textarea::placeholder {
     color: var(--text-secondary);
 }
 
+/* Number input */
+.input-small {
+    width: 70px;
+    padding: 6px 8px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.input-small:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
 /* Collapsible Sections */
 .collapsible .section-header {
     display: flex;
@@ -209,6 +243,24 @@ textarea::placeholder {
 
 .collapsible.collapsed .section-content {
     display: none;
+}
+
+/* Settings Panel */
+.settings-panel {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+}
+
+.settings-panel.hidden {
+    display: none;
+}
+
+.divider {
+    height: 1px;
+    background-color: var(--border);
+    margin: 12px 0;
 }
 
 /* Settings */

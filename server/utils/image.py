@@ -21,7 +21,10 @@ def base64_to_image(b64_string: str) -> Image.Image:
         b64_string = b64_string.split(",")[1]
 
     image_data = base64.b64decode(b64_string)
-    return Image.open(io.BytesIO(image_data))
+    image = Image.open(io.BytesIO(image_data))
+    # Force load to catch truncation errors early
+    image.load()
+    return image
 
 
 def ensure_rgb(image: Image.Image) -> Image.Image:

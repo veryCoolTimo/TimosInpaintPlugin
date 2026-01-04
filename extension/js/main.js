@@ -2,181 +2,221 @@
  * AE Inpaint Panel - Main Logic
  */
 
-// Node.js modules (доступны в CEP)
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
 
-// Глобальные переменные
 let csInterface;
-let serverOnline = false;
 let isProcessing = false;
-let serverProcess = null;
 let extensionPath = null;
+let serverProcess = null;
 
-// DOM элементы
-const elements = {
-    btnInpaint: null,
-    btnDebug: null,
-    btnClearCache: null,
-    serverStatus: null,
-    prompt: null,
-    log: null,
-    progressOverlay: null,
-    progressText: null,
-    // Sliders
-    strength: null,
-    guidance: null,
-    steps: null,
-    feather: null,
-    expand: null
-};
+const elements = {};
 
-/**
- * Инициализация
- */
+function loadJSX() {
+    // Convert file:// URL to regular path
+    let extPath = extensionPath;
+    if (extPath.startsWith('file://')) {
+        extPath = decodeURIComponent(extPath.replace('file://', ''));
+    }
+
+    // Resolve real path (for symlinks)
+    let jsxPath = path.join(extPath, 'jsx', 'host.jsx');
+    try {
+        jsxPath = fs.realpathSync(jsxPath);
+    } catch (e) {
+        console.error('Symlink resolve failed:', e);
+    }
+
+    console.log('Loading JSX from:', jsxPath);
+
+    try {
+        let jsxContent = fs.readFileSync(jsxPath, 'utf8');
+
+        // Remove BOM if present
+        if (jsxContent.charCodeAt(0) === 0xFEFF) {
+            jsxContent = jsxContent.slice(1);
+        }
+
+        console.log('JSX content length:', jsxContent.length);
+
+        csInterface.evalScript(jsxContent, (result) => {
+            console.log('JSX eval result:', result);
+        });
+    } catch (e) {
+        console.error('JSX read error:', e.message);
+    }
+}
+
 function init() {
-    // CSInterface
     csInterface = new CSInterface();
-
-    // Получаем путь к расширению
     extensionPath = csInterface.getSystemPath('extension');
-    // Путь к проекту (на уровень выше extension/)
-    const projectPath = path.dirname(extensionPath);
 
-    // Кэшируем элементы
+    // Cache elements first
     elements.btnInpaint = document.getElementById('btn-inpaint');
+    elements.btnStop = document.getElementById('btn-stop');
+    elements.btnToggleSettings = document.getElementById('btn-toggle-settings');
     elements.btnDebug = document.getElementById('btn-debug');
     elements.btnClearCache = document.getElementById('btn-clear-cache');
-    elements.serverStatus = document.getElementById('server-status');
+    elements.btnDebugMode = document.getElementById('btn-debug-mode');
+    elements.settingsPanel = document.getElementById('settings-panel');
     elements.prompt = document.getElementById('prompt');
     elements.log = document.getElementById('log');
-    elements.progressOverlay = document.getElementById('progress-overlay');
-    elements.progressText = document.getElementById('progress-text');
-
     elements.strength = document.getElementById('strength');
     elements.guidance = document.getElementById('guidance');
     elements.steps = document.getElementById('steps');
-    elements.feather = document.getElementById('feather');
-    elements.expand = document.getElementById('expand');
 
-    // Привязываем обработчики
+    // Load jsx manually (symlink fix)
+    loadJSX();
+
+    // Test basic ExtendScript first
+    csInterface.evalScript('app.version', (result) => {
+        console.log('AE version:', result);
+        log('AE: ' + result, 'info');
+    });
+
+    // Verify JSX loaded after a brief delay
+    setTimeout(() => {
+        csInterface.evalScript('typeof getProjectInfo', (result) => {
+            console.log('getProjectInfo type:', result);
+            if (result === 'function') {
+                log('JSX loaded', 'success');
+            } else {
+                log('JSX failed: ' + result, 'error');
+            }
+        });
+    }, 1000);
+
+    // Event handlers
     elements.btnInpaint.addEventListener('click', handleInpaint);
+    elements.btnStop.addEventListener('click', handleStop);
+    elements.btnToggleSettings.addEventListener('click', handleToggleSettings);
     elements.btnDebug.addEventListener('click', handleDebugExport);
     elements.btnClearCache.addEventListener('click', handleClearCache);
+    elements.btnDebugMode.addEventListener('click', handleToggleDebugMode);
 
-    // Слайдеры
     setupSlider('strength');
     setupSlider('guidance');
-    setupSlider('steps');
-    setupSlider('feather');
-    setupSlider('expand');
 
-    // Проверяем сервер и автозапуск
-    initServer();
-    setInterval(checkServerStatus, 10000); // каждые 10 сек
-
-    log('Panel initialized', 'info');
-    log(`Extension: ${extensionPath}`, 'info');
+    log('Ready', 'info');
 }
 
-/**
- * Получить путь к проекту (корень репозитория)
- */
 function getProjectPath() {
-    // extensionPath указывает на папку extension/
-    // проект находится на уровень выше
-    return path.dirname(extensionPath);
-}
+    // Convert file:// URL to regular path
+    let extPath = extensionPath;
+    if (extPath.startsWith('file://')) {
+        extPath = decodeURIComponent(extPath.replace('file://', ''));
+    }
 
-/**
- * Инициализация сервера (проверка + автозапуск)
- */
-async function initServer() {
-    updateServerStatus(false, 'Checking...');
-
+    let realPath = extPath;
     try {
-        await API.healthCheck();
-        updateServerStatus(true, 'Ready');
-        log('Server already running', 'success');
-    } catch (error) {
-        log('Server offline, starting...', 'warning');
-        startServer();
+        realPath = fs.realpathSync(extPath);
+    } catch (e) {
+        console.error('realpathSync failed:', e);
     }
+    const projectPath = path.dirname(realPath);
+    console.log('extensionPath:', extensionPath);
+    console.log('extPath:', extPath);
+    console.log('realPath:', realPath);
+    console.log('projectPath:', projectPath);
+    return projectPath;
 }
 
-/**
- * Запуск Python сервера
- */
+function setupSlider(id) {
+    const slider = document.getElementById(id);
+    const span = document.getElementById(`${id}-value`);
+    slider.addEventListener('input', () => span.textContent = slider.value);
+}
+
+function log(msg, type = 'info') {
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+    entry.textContent = `[${new Date().toLocaleTimeString('en-US', {hour12: false})}] ${msg}`;
+    elements.log.appendChild(entry);
+    elements.log.scrollTop = elements.log.scrollHeight;
+    while (elements.log.children.length > 50) elements.log.removeChild(elements.log.firstChild);
+}
+
+function showProgress(text) {
+    // Just log status, don't block UI
+    log('>> ' + text, 'info');
+    elements.btnInpaint.disabled = true;
+    elements.btnInpaint.textContent = text;
+    isProcessing = true;
+}
+
+function hideProgress() {
+    elements.btnInpaint.disabled = false;
+    elements.btnInpaint.textContent = 'Inpaint';
+    elements.btnStop.classList.add('hidden');
+    isProcessing = false;
+}
+
+function showStopButton() {
+    elements.btnStop.classList.remove('hidden');
+}
+
+async function handleStop() {
+    if (!isProcessing) return;
+    log('Stopping...', 'info');
+    // Kill the server to stop inference
+    stopServer();
+    hideProgress();
+    log('Stopped', 'info');
+}
+
+
+// Start server and wait for it to be ready
 function startServer() {
-    const projectPath = getProjectPath();
-    const venvPython = path.join(projectPath, '.venv', 'bin', 'python');
-    const serverMain = path.join(projectPath, 'server', 'main.py');
+    return new Promise((resolve, reject) => {
+        const projectPath = getProjectPath();
+        const venvPython = path.join(projectPath, '.venv', 'bin', 'python');
 
-    // Проверяем существование venv
-    if (!fs.existsSync(venvPython)) {
-        log('Error: venv not found. Run install.sh first', 'error');
-        updateServerStatus(false, 'No venv');
-        return;
-    }
+        log('Project path: ' + projectPath, 'info');
+        log('venv path: ' + venvPython, 'info');
 
-    log('Starting server...', 'info');
-    updateServerStatus(false, 'Starting...');
-
-    // Запускаем сервер
-    serverProcess = spawn(venvPython, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '7860'], {
-        cwd: path.join(projectPath, 'server'),
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe']
-    });
-
-    // Логируем stdout
-    serverProcess.stdout.on('data', (data) => {
-        const msg = data.toString().trim();
-        if (msg) {
-            console.log('[Server]', msg);
-            // Проверяем готовность
-            if (msg.includes('Uvicorn running') || msg.includes('Application startup complete')) {
-                log('Server started', 'success');
-                checkServerStatus();
-            }
+        if (!fs.existsSync(venvPython)) {
+            log('venv check failed, exists: ' + fs.existsSync(projectPath), 'error');
+            reject(new Error('venv not found. Run install.sh first.'));
+            return;
         }
-    });
 
-    // Логируем stderr
-    serverProcess.stderr.on('data', (data) => {
-        const msg = data.toString().trim();
-        if (msg) {
-            console.error('[Server Error]', msg);
-            // Uvicorn пишет в stderr даже при успехе
-            if (msg.includes('Uvicorn running') || msg.includes('Started')) {
-                checkServerStatus();
+        log('Starting server...', 'info');
+
+        serverProcess = spawn(venvPython, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '7860'], {
+            cwd: path.join(projectPath, 'server'),
+            env: { ...process.env, PYTHONUNBUFFERED: '1' }
+        });
+
+        let started = false;
+
+        serverProcess.stderr.on('data', (data) => {
+            const msg = data.toString();
+            if (!started && (msg.includes('Uvicorn running') || msg.includes('Application startup complete'))) {
+                started = true;
+                log('Server online', 'success');
+                resolve();
             }
-        }
+        });
+
+        serverProcess.on('error', (err) => {
+            reject(new Error(`Server error: ${err.message}`));
+        });
+
+        serverProcess.on('exit', (code) => {
+            serverProcess = null;
+            log('Server stopped', 'info');
+        });
+
+        // Timeout after 30 seconds
+        setTimeout(() => {
+            if (!started) {
+                reject(new Error('Server start timeout'));
+            }
+        }, 30000);
     });
-
-    serverProcess.on('error', (err) => {
-        log(`Server error: ${err.message}`, 'error');
-        updateServerStatus(false, 'Error');
-    });
-
-    serverProcess.on('exit', (code) => {
-        log(`Server exited with code ${code}`, code === 0 ? 'info' : 'error');
-        serverProcess = null;
-        updateServerStatus(false, 'Stopped');
-    });
-
-    // Не ждём завершения
-    serverProcess.unref();
-
-    // Проверяем через 3 секунды
-    setTimeout(checkServerStatus, 3000);
 }
 
-/**
- * Остановка сервера
- */
 function stopServer() {
     if (serverProcess) {
         log('Stopping server...', 'info');
@@ -185,278 +225,185 @@ function stopServer() {
     }
 }
 
-/**
- * Настройка слайдера
- */
-function setupSlider(id) {
-    const slider = document.getElementById(id);
-    const valueSpan = document.getElementById(`${id}-value`);
-
-    slider.addEventListener('input', () => {
-        valueSpan.textContent = slider.value;
-    });
-}
-
-/**
- * Переключение секции
- */
-function toggleSection(header) {
-    const section = header.parentElement;
-    section.classList.toggle('collapsed');
-}
-
-/**
- * Логирование
- */
-function log(message, type = 'info') {
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${type}`;
-
-    const time = new Date().toLocaleTimeString('en-US', { hour12: false });
-    entry.textContent = `[${time}] ${message}`;
-
-    elements.log.appendChild(entry);
-    elements.log.scrollTop = elements.log.scrollHeight;
-
-    // Ограничиваем количество записей
-    while (elements.log.children.length > 50) {
-        elements.log.removeChild(elements.log.firstChild);
-    }
-}
-
-/**
- * Показать/скрыть прогресс
- */
-function showProgress(text) {
-    elements.progressText.textContent = text;
-    elements.progressOverlay.classList.remove('hidden');
-    isProcessing = true;
-}
-
-function hideProgress() {
-    elements.progressOverlay.classList.add('hidden');
-    isProcessing = false;
-}
-
-/**
- * Обновление статуса сервера
- */
-function updateServerStatus(online, text) {
-    serverOnline = online;
-    elements.serverStatus.className = `status-indicator ${online ? 'online' : 'offline'}`;
-    elements.serverStatus.querySelector('.status-text').textContent = text;
-    elements.btnInpaint.disabled = !online || isProcessing;
-}
-
-/**
- * Проверка статуса сервера
- */
-async function checkServerStatus() {
+async function isServerOnline() {
     try {
-        const health = await API.healthCheck();
-        updateServerStatus(true, health.engine_loaded ? 'Ready' : 'Model not loaded');
-    } catch (error) {
-        updateServerStatus(false, 'Offline');
+        await API.healthCheck();
+        return true;
+    } catch {
+        return false;
     }
 }
 
-/**
- * Вызов ExtendScript функции
- */
+function handleToggleSettings() {
+    elements.settingsPanel.classList.toggle('hidden');
+    elements.btnToggleSettings.textContent = elements.settingsPanel.classList.contains('hidden') ? 'Settings' : 'Hide Settings';
+}
+
 function evalScript(script) {
     return new Promise((resolve, reject) => {
         csInterface.evalScript(script, (result) => {
-            if (result === 'EvalScript error.' || result === 'undefined') {
-                reject(new Error('ExtendScript error'));
+            console.log('evalScript [' + script.substring(0, 30) + '...] result:', result);
+
+            if (result === 'EvalScript error.') {
+                reject(new Error('EvalScript error'));
+                return;
+            }
+            if (result === 'undefined' || result === undefined || result === null) {
+                reject(new Error('Result is undefined'));
                 return;
             }
             try {
                 resolve(JSON.parse(result));
             } catch (e) {
+                // Not JSON - return as is
                 resolve(result);
             }
         });
     });
 }
 
-/**
- * Получить настройки
- */
 function getSettings() {
     return {
         strength: parseFloat(elements.strength.value),
         guidance: parseFloat(elements.guidance.value),
-        steps: parseInt(elements.steps.value),
-        feather: parseInt(elements.feather.value),
-        expand: parseInt(elements.expand.value)
+        steps: parseInt(elements.steps.value)
     };
 }
 
-/**
- * Главный обработчик инпейнтинга
- */
 async function handleInpaint() {
-    if (isProcessing || !serverOnline) return;
+    if (isProcessing) return;
 
     try {
         showProgress('Preparing...');
-        log('Starting inpaint process...', 'info');
 
-        // 1. Получаем информацию о проекте
-        const projectInfo = await evalScript('getProjectInfo()');
-        if (projectInfo.error) {
-            throw new Error(projectInfo.error);
+        // Start server if needed
+        if (!(await isServerOnline())) {
+            showProgress('Starting server...');
+            await startServer();
+            await new Promise(r => setTimeout(r, 1000));
         }
+
+        log('Starting inpaint...', 'info');
+
+        // 1. Project info
+        let projectInfo;
+        try {
+            projectInfo = await evalScript('getProjectInfo()');
+        } catch (e) {
+            log('getProjectInfo error: ' + e.message, 'error');
+            throw new Error('ExtendScript error. Check log.');
+        }
+        if (projectInfo.error) throw new Error(projectInfo.error);
+        if (!projectInfo.projectPath) throw new Error('Save project first.');
         log(`Comp: ${projectInfo.compName}, Frame: ${projectInfo.currentFrame}`, 'info');
 
-        // 2. Находим маску
-        const maskInfo = await evalScript('findMaskLayer()');
-        if (!maskInfo.found) {
-            throw new Error(maskInfo.error || 'Mask layer not found');
-        }
-        log(`Found mask: ${maskInfo.name}`, 'info');
+        // 2. Selected layer with mask
+        const layerInfo = await evalScript('getSelectedLayerWithMask()');
+        log('Layer info: ' + JSON.stringify(layerInfo), 'info');
+        if (layerInfo.error) throw new Error(layerInfo.error);
+        log(`Layer: ${layerInfo.name}, Mask: ${layerInfo.selectedMaskName}`, 'info');
 
-        // 3. Получаем выбранный слой (источник)
-        const selectedLayer = await evalScript('getSelectedLayer()');
-        if (selectedLayer.error) {
-            throw new Error(selectedLayer.error);
-        }
-        log(`Source layer: ${selectedLayer.name}`, 'info');
-
-        // 4. Экспортируем кадр и маску
-        showProgress('Exporting frames...');
-
+        // 3. Export
+        showProgress('Exporting...');
         const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
+        log('Cache dir: ' + cacheDir, 'info');
         const exportResult = await evalScript(
-            `exportForInpaint(${selectedLayer.index}, ${maskInfo.index}, "${cacheDir.replace(/\\/g, '/')}")`
+            `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, "${cacheDir.replace(/\\/g, '/')}")`
         );
+        log('Export result: ' + JSON.stringify(exportResult), 'info');
+        if (exportResult.error) throw new Error(exportResult.error);
 
-        if (exportResult.error) {
-            throw new Error(exportResult.error);
-        }
-        log(`Exported: ${exportResult.imagePath}`, 'info');
-
-        // 5. Читаем файлы в base64
-        showProgress('Loading images...');
-
+        // 5. Load images
+        showProgress('Loading...');
         const imageBase64 = await fileToBase64(exportResult.imagePath);
         const maskBase64 = await fileToBase64(exportResult.maskPath);
+        log(`Image b64: ${imageBase64.length}, Mask b64: ${maskBase64.length}`, 'info');
 
-        // 6. Отправляем на сервер
-        showProgress('Running AI inference...');
-        log('Sending to server...', 'info');
-
-        const settings = getSettings();
-        const prompt = elements.prompt.value.trim();
+        // 6. Inpaint
+        showProgress('AI processing...');
+        showStopButton();
+        log('Running inference...', 'info');
 
         const result = await API.inpaint({
             imageBase64,
             maskBase64,
-            prompt,
-            settings,
+            prompt: elements.prompt.value.trim(),
+            settings: getSettings(),
             cacheDir: projectInfo.projectPath
         });
 
-        if (result.cached) {
-            log('Result from cache!', 'success');
-        } else {
-            log('Inference completed', 'success');
-        }
+        log(result.cached ? 'From cache' : 'Inference done', 'success');
 
-        // 7. Сохраняем результат
-        showProgress('Importing result...');
-
+        // 7. Save result
+        showProgress('Importing...');
         const outputDir = projectInfo.projectPath + '/_AI_OUT';
         const resultPath = `${outputDir}/${projectInfo.compName}_frame${projectInfo.currentFrame}_result.png`;
-
         await base64ToFile(result.result, resultPath);
-        log(`Saved: ${resultPath}`, 'info');
 
-        // 8. Импортируем в AE
+        // 8. Import to AE
         const importResult = await evalScript(
-            `importResultAsLayer("${resultPath.replace(/\\/g, '/')}", ${selectedLayer.index}, "Inpaint Result")`
+            `importResultAsLayer("${resultPath.replace(/\\/g, '/')}", ${layerInfo.index}, "Inpaint Result")`
         );
+        if (importResult.error) throw new Error(importResult.error);
 
-        if (importResult.error) {
-            throw new Error(importResult.error);
-        }
-
-        log(`Created layer: ${importResult.layerName}`, 'success');
-        log('Done!', 'success');
+        log(`Done: ${importResult.layerName}`, 'success');
 
     } catch (error) {
         log(`Error: ${error.message}`, 'error');
-        console.error(error);
     } finally {
         hideProgress();
+        // Stop server after inpaint
+        stopServer();
     }
 }
 
-/**
- * Debug экспорт (без inference)
- */
 async function handleDebugExport() {
     try {
         log('Debug export...', 'info');
-
         const projectInfo = await evalScript('getProjectInfo()');
-        if (projectInfo.error) {
-            throw new Error(projectInfo.error);
-        }
+        if (projectInfo.error) throw new Error(projectInfo.error);
 
-        const maskInfo = await evalScript('findMaskLayer()');
-        if (!maskInfo.found) {
-            throw new Error(maskInfo.error || 'Mask layer not found');
-        }
-
-        const selectedLayer = await evalScript('getSelectedLayer()');
-        if (selectedLayer.error) {
-            throw new Error(selectedLayer.error);
-        }
+        const layerInfo = await evalScript('getSelectedLayerWithMask()');
+        if (layerInfo.error) throw new Error(layerInfo.error);
 
         const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
         const exportResult = await evalScript(
-            `exportForInpaint(${selectedLayer.index}, ${maskInfo.index}, "${cacheDir.replace(/\\/g, '/')}")`
+            `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, "${cacheDir.replace(/\\/g, '/')}")`
         );
-
-        if (exportResult.error) {
-            throw new Error(exportResult.error);
-        }
+        if (exportResult.error) throw new Error(exportResult.error);
 
         log(`Image: ${exportResult.imagePath}`, 'success');
         log(`Mask: ${exportResult.maskPath}`, 'success');
-
     } catch (error) {
-        log(`Debug error: ${error.message}`, 'error');
+        log(`Error: ${error.message}`, 'error');
     }
 }
 
-/**
- * Очистка кэша
- */
 async function handleClearCache() {
     try {
         const projectInfo = await evalScript('getProjectInfo()');
-        if (projectInfo.error) {
-            throw new Error(projectInfo.error);
-        }
-
+        if (projectInfo.error) throw new Error(projectInfo.error);
         await API.clearCache(projectInfo.projectPath);
         log('Cache cleared', 'success');
-
     } catch (error) {
-        log(`Clear cache error: ${error.message}`, 'error');
+        log(`Error: ${error.message}`, 'error');
     }
 }
 
-// Инициализация при загрузке
+function handleToggleDebugMode() {
+    const { exec } = require('child_process');
+    exec('defaults read com.adobe.CSXS.11 PlayerDebugMode 2>/dev/null || echo "0"', (err, stdout) => {
+        const newVal = stdout.trim() === '1' ? '0' : '1';
+        const cmds = [
+            `defaults write com.adobe.CSXS.11 PlayerDebugMode ${newVal}`,
+            `defaults write com.adobe.CSXS.10 PlayerDebugMode ${newVal}`,
+            `defaults write com.adobe.CSXS.9 PlayerDebugMode ${newVal}`
+        ].join(' && ');
+        exec(cmds, () => {
+            elements.btnDebugMode.textContent = `CEP Debug: ${newVal === '1' ? 'ON' : 'OFF'}`;
+            log(`CEP Debug: ${newVal === '1' ? 'ON' : 'OFF'}. Restart AE.`, 'success');
+        });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', init);
-
-// Остановка сервера при закрытии панели
-window.addEventListener('beforeunload', () => {
-    // Не останавливаем сервер — пусть работает в фоне
-    // Если хочешь останавливать: stopServer();
-});
-
-// Экспорт для глобального доступа
-window.toggleSection = toggleSection;

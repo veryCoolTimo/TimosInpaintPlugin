@@ -168,9 +168,15 @@ async def inpaint(request: InpaintRequest):
             raise HTTPException(status_code=500, detail=f"Failed to load model: {e}")
 
     try:
+        # Debug: log received data sizes
+        logger.info(f"Received image base64 length: {len(request.image)}")
+        logger.info(f"Received mask base64 length: {len(request.mask)}")
+
         # Декодируем изображения
         image = base64_to_image(request.image)
+        logger.info(f"Decoded image: {image.mode} {image.size}")
         mask = base64_to_image(request.mask)
+        logger.info(f"Decoded mask: {mask.mode} {mask.size}")
 
         # Подготавливаем изображения
         image = ensure_rgb(image)

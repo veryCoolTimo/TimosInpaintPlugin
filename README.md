@@ -1,6 +1,6 @@
 # AE Inpaint Plugin
 
-AI inpainting for After Effects. Remove objects and clean backgrounds from manhwa/manga artwork.
+AI inpainting for After Effects. Remove objects and clean backgrounds.
 
 ## Requirements
 
@@ -11,62 +11,46 @@ AI inpainting for After Effects. Remove objects and clean backgrounds from manhw
 ## Installation
 
 ```bash
-# Install Python dependencies
 ./scripts/install.sh
-
-# Install CEP extension
 ./scripts/install_extension.sh
 ```
 
-## Usage
+Restart After Effects.
 
-1. Open After Effects
-2. Go to `Window > Extensions > AE Inpaint`
-3. Server starts automatically
-4. Select source layer
-5. Create mask layer above (Shape/Solid, white = inpaint area)
-6. Click Inpaint
+## How to Use
 
-## Project Structure
+1. Open panel: `Window > Extensions > AE Inpaint`
 
-```
-extension/     CEP panel (HTML/JS)
-server/        Python backend (FastAPI + SDXL)
-scripts/       Installation scripts
-```
+2. Select layer with your image
+
+3. Draw mask on that layer:
+   - Press `G` (Pen tool)
+   - Draw shape around area to inpaint
+   - White area = AI will fill this
+
+4. Click **Inpaint**
+
+Result appears as new layer above, with matching transforms.
+
+## Mask Tips
+
+- Mask is drawn directly on source layer (standard AE mask)
+- If multiple masks: select one, or Mask 1 is used
+- No mask = error message
 
 ## Settings
 
-| Parameter | Range | Description |
-|-----------|-------|-------------|
-| Strength | 0.5-1.0 | Denoising strength |
-| Guidance | 1-15 | Prompt influence |
-| Steps | 10-50 | Inference steps |
-| Feather | 0-20px | Mask edge blur |
-| Expand | 0-20px | Mask expansion |
+Click **Settings** to adjust:
+- Strength (0.5-1.0)
+- Guidance (1-15)
+- Steps (10-50)
+- Mask feather/expand
 
-## API
+## Notes
 
-Server runs on `http://127.0.0.1:7860`
-
-- `GET /health` - Server status
-- `POST /inpaint` - Run inpainting
-- `POST /load` - Load model
-- `POST /clear-cache` - Clear cache
-
-## Troubleshooting
-
-Server not starting:
-```bash
-ls .venv/bin/python  # Check venv exists
-./scripts/install.sh  # Reinstall if missing
-```
-
-Extension not visible:
-```bash
-defaults write com.adobe.CSXS.11 PlayerDebugMode 1
-# Restart After Effects
-```
+- First run downloads model (~5GB)
+- Each inpaint: 20-40 seconds
+- Add prompt for better results
 
 ## License
 
