@@ -55,21 +55,28 @@ const API = {
      * @param {Object} params
      * @param {string} params.imageBase64 - Base64 PNG изображения
      * @param {string} params.maskBase64 - Base64 PNG маски
+     * @param {string} params.mode - Режим: 'ai' или 'clean'
      * @param {string} params.prompt - Текстовый промпт
      * @param {Object} params.settings - Настройки (strength, guidance, etc.)
      * @param {string} params.cacheDir - Путь к папке кэша
      */
-    async inpaint({ imageBase64, maskBase64, prompt, settings, cacheDir }) {
+    async inpaint({ imageBase64, maskBase64, mode, prompt, settings, cacheDir }) {
         const body = {
             image: imageBase64,
             mask: maskBase64,
+            mode: mode || 'ai',
             prompt: prompt || '',
             negative_prompt: settings.negativePrompt || '',
-            strength: settings.strength || 0.85,
+            strength: settings.strength || 1.0,
             guidance_scale: settings.guidance || 7.5,
             num_steps: settings.steps || 30,
             controlnet_scale: settings.controlnetScale || 0.5,
             seed: settings.seed || null,
+            feather: settings.feather || 0,
+            expand: settings.expand || 0,
+            crop_to_mask: settings.cropToMask !== false,  // default true
+            crop_padding: 128,
+            invert_mask: settings.invertMask || false,
             cache_dir: cacheDir || null
         };
 
@@ -116,21 +123,92 @@ const API = {
             throw new Error(error.detail || 'Failed to clear cache');
         }
         return await response.json();
+    },
+
+    /**
+     * Апскейл изображения
+     * @param {Object} params
+     * @param {string} params.imageBase64 - Base64 PNG изображения
+     * @param {number} params.scale - Множитель масштаба (2 или 4)
+     * @param {string} params.modelType - Тип модели: 'anime' или 'general'
+     */
+    async upscale({ imageBase64, scale, modelType }) {
+        const body = {
+            image: imageBase64,
+            scale: scale || 4,
+            model_type: modelType || 'anime'
+        };
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+        try {
+            const response = await fetch(`${this.baseUrl}/upscale`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body),
+                signal: controller.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.detail || 'Upscale failed');
+            }
+
+            return await response.json();
+
+        } catch (error) {
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                throw new Error('Request timeout - upscale took too long');
+            }
+            throw error;
+        }
     }
 };
+
+/**
+ * Проверяет что PNG файл полностью записан (имеет IEND чанк)
+ */
+function isPngComplete(buffer) {
+    // PNG должен начинаться с сигнатуры
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    if (buffer.length < 8 || !buffer.slice(0, 8).equals(pngSignature)) {
+        return false;
+    }
+
+    // PNG должен заканчиваться IEND чанком
+    // IEND = 0x00 0x00 0x00 0x00 0x49 0x45 0x4E 0x44 0xAE 0x42 0x60 0x82
+    const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
+    const tail = buffer.slice(-12);
+    return tail.slice(4).equals(iendSignature);
+}
 
 /**
  * Конвертация файла в Base64
  */
 async function fileToBase64(filePath) {
     const fs = require('fs');
+    const { execSync } = require('child_process');
 
-    // Wait a bit for file to be fully written by ExtendScript
-    await new Promise(r => setTimeout(r, 500));
+    // Wait for file to be fully written by ExtendScript
+    // Large images (3000+ px) take longer to write
+    await new Promise(r => setTimeout(r, 2000));
 
-    // Use synchronous reading to avoid race conditions
+    // Force filesystem sync to flush disk buffers
+    try {
+        execSync('sync', { timeout: 5000 });
+    } catch (e) {
+        console.log('sync command failed, continuing anyway');
+    }
+
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = 20;
+    let lastSize = 0;
 
     while (attempts < maxAttempts) {
         attempts++;
@@ -139,19 +217,34 @@ async function fileToBase64(filePath) {
             const stats = fs.statSync(filePath);
             if (stats.size === 0) {
                 console.log(`File empty, retry ${attempts}/${maxAttempts}: ${filePath}`);
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 500));
+                continue;
+            }
+
+            // Check if file size is still changing (file still being written)
+            if (stats.size !== lastSize) {
+                console.log(`File size changed: ${lastSize} -> ${stats.size}, waiting...`);
+                lastSize = stats.size;
+                await new Promise(r => setTimeout(r, 1000));
                 continue;
             }
 
             console.log(`Reading file: ${filePath} (${stats.size} bytes)`);
 
-            // Synchronous read to avoid race conditions
+            // Synchronous read
             const buffer = fs.readFileSync(filePath);
 
             // Verify size matches
             if (buffer.length !== stats.size) {
                 console.error(`Read mismatch: got ${buffer.length}, expected ${stats.size}, retrying...`);
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 500));
+                continue;
+            }
+
+            // Verify PNG is complete (has IEND chunk)
+            if (filePath.endsWith('.png') && !isPngComplete(buffer)) {
+                console.log(`PNG incomplete (no IEND), retry ${attempts}/${maxAttempts}`);
+                await new Promise(r => setTimeout(r, 500));
                 continue;
             }
 
@@ -161,7 +254,7 @@ async function fileToBase64(filePath) {
 
         } catch (e) {
             console.log(`File error, retry ${attempts}/${maxAttempts}: ${e.message}`);
-            await new Promise(r => setTimeout(r, 300));
+            await new Promise(r => setTimeout(r, 500));
         }
     }
 

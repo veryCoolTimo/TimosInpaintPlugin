@@ -39,18 +39,26 @@ def ensure_rgb(image: Image.Image) -> Image.Image:
     return image
 
 
-def ensure_mask_format(mask: Image.Image) -> Image.Image:
+def ensure_mask_format(mask: Image.Image, invert: bool = False) -> Image.Image:
     """
     Приводит маску к правильному формату:
     - Grayscale (L mode)
     - Белый = область инпейнта
     - Чёрный = сохранить оригинал
+
+    Args:
+        mask: Входная маска
+        invert: Инвертировать маску (для AE где маска = что сохранить)
     """
     if mask.mode == "RGBA":
-        # Берём альфа-канал или конвертируем в grayscale
         mask = mask.convert("L")
     elif mask.mode != "L":
         mask = mask.convert("L")
+
+    if invert:
+        # Инвертируем: черный <-> белый
+        import PIL.ImageOps
+        mask = PIL.ImageOps.invert(mask)
 
     return mask
 
@@ -83,6 +91,31 @@ def resize_for_model(image: Image.Image, max_size: int = 1024) -> Image.Image:
     return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
 
+def blank_masked_area(image: Image.Image, mask: Image.Image) -> Image.Image:
+    """
+    Заменяет содержимое под маской средним цветом фона.
+    Это заставляет модель генерировать на основе контекста снаружи маски,
+    а не воспроизводить содержимое внутри.
+    """
+    import numpy as np
+
+    img = np.array(image).copy()
+    m = np.array(mask)
+
+    # Unmasked pixels (background)
+    bg_mask = m < 128
+    if np.any(bg_mask):
+        # Average color of background
+        avg_color = img[bg_mask].mean(axis=0).astype(np.uint8)
+    else:
+        avg_color = np.array([128, 128, 128], dtype=np.uint8)
+
+    # Fill masked area with average background color
+    img[m >= 128] = avg_color
+
+    return Image.fromarray(img)
+
+
 def apply_mask_feather(mask: Image.Image, feather_px: int) -> Image.Image:
     """Применяет размытие к краям маски"""
     if feather_px <= 0:
@@ -103,3 +136,132 @@ def expand_mask(mask: Image.Image, expand_px: int) -> Image.Image:
         mask = mask.filter(ImageFilter.MaxFilter(3))
 
     return mask
+
+
+def get_mask_bbox(mask: Image.Image, padding: int = 64) -> tuple:
+    """
+    Находит bounding box белой области маски с отступом.
+
+    Args:
+        mask: Маска в режиме L (grayscale)
+        padding: Отступ вокруг маски в пикселях
+
+    Returns:
+        tuple: (x1, y1, x2, y2) или None если маска пустая
+    """
+    import numpy as np
+
+    mask_array = np.array(mask)
+
+    # Находим все белые пиксели (значение > 128)
+    white_pixels = np.where(mask_array > 128)
+
+    if len(white_pixels[0]) == 0:
+        return None
+
+    # Bounding box
+    y_min, y_max = white_pixels[0].min(), white_pixels[0].max()
+    x_min, x_max = white_pixels[1].min(), white_pixels[1].max()
+
+    # Добавляем padding
+    x1 = max(0, x_min - padding)
+    y1 = max(0, y_min - padding)
+    x2 = min(mask.width, x_max + padding)
+    y2 = min(mask.height, y_max + padding)
+
+    # Делаем размеры кратными 8 для SD
+    width = x2 - x1
+    height = y2 - y1
+
+    # Округляем вверх до кратного 8
+    new_width = ((width + 7) // 8) * 8
+    new_height = ((height + 7) // 8) * 8
+
+    # Расширяем bbox если нужно
+    extra_w = new_width - width
+    extra_h = new_height - height
+
+    x1 = max(0, x1 - extra_w // 2)
+    y1 = max(0, y1 - extra_h // 2)
+    x2 = min(mask.width, x1 + new_width)
+    y2 = min(mask.height, y1 + new_height)
+
+    # Корректируем если вышли за границы
+    if x2 - x1 < new_width:
+        x1 = max(0, x2 - new_width)
+    if y2 - y1 < new_height:
+        y1 = max(0, y2 - new_height)
+
+    return (x1, y1, x2, y2)
+
+
+def crop_to_mask(image: Image.Image, mask: Image.Image, padding: int = 64) -> tuple:
+    """
+    Обрезает изображение и маску по области маски.
+
+    Args:
+        image: Исходное изображение
+        mask: Маска
+        padding: Отступ вокруг маски
+
+    Returns:
+        tuple: (cropped_image, cropped_mask, bbox) или (image, mask, None) если маска слишком большая
+    """
+    bbox = get_mask_bbox(mask, padding)
+
+    if bbox is None:
+        return image, mask, None
+
+    x1, y1, x2, y2 = bbox
+    crop_width = x2 - x1
+    crop_height = y2 - y1
+
+    # Если crop область больше 70% от оригинала - не обрезаем
+    original_area = image.width * image.height
+    crop_area = crop_width * crop_height
+
+    if crop_area > original_area * 0.7:
+        return image, mask, None
+
+    cropped_image = image.crop(bbox)
+    cropped_mask = mask.crop(bbox)
+
+    return cropped_image, cropped_mask, bbox
+
+
+def paste_back(original: Image.Image, result: Image.Image, bbox: tuple, mask: Image.Image = None) -> Image.Image:
+    """
+    Вставляет результат обратно в оригинальное изображение.
+
+    Args:
+        original: Оригинальное изображение
+        result: Результат инпейнта (обрезанный)
+        bbox: Координаты обрезки (x1, y1, x2, y2)
+        mask: Опциональная маска для плавного смешивания
+
+    Returns:
+        Image: Финальное изображение
+    """
+    if bbox is None:
+        return result
+
+    x1, y1, x2, y2 = bbox
+
+    # Ресайзим результат если размеры не совпадают
+    expected_size = (x2 - x1, y2 - y1)
+    if result.size != expected_size:
+        result = result.resize(expected_size, Image.Resampling.LANCZOS)
+
+    # Создаём копию оригинала
+    final = original.copy()
+
+    if mask is not None:
+        # Плавное смешивание по маске
+        cropped_mask = mask.crop(bbox)
+        if cropped_mask.size != result.size:
+            cropped_mask = cropped_mask.resize(result.size, Image.Resampling.LANCZOS)
+        final.paste(result, (x1, y1), cropped_mask)
+    else:
+        final.paste(result, (x1, y1))
+
+    return final

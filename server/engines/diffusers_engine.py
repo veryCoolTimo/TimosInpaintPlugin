@@ -83,7 +83,6 @@ class DiffusersEngine(BaseEngine):
                 self.model_id,
                 torch_dtype=dtype,
                 safety_checker=None,
-                local_files_only=True,
             )
 
         self.pipe.to(self.device)
@@ -181,8 +180,11 @@ class DiffusersEngine(BaseEngine):
 
         logger.info(
             f"Running inpaint: size={image.size}, "
-            f"strength={strength}, steps={num_inference_steps}"
+            f"strength={strength}, steps={num_inference_steps}, "
+            f"guidance={guidance_scale}"
         )
+        logger.info(f"Prompt: {prompt}")
+        logger.info(f"Negative: {negative_prompt}")
 
         # Запускаем инпейнтинг
         result = self.pipe(

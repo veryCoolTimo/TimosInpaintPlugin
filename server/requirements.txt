@@ -3,18 +3,30 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 
-# ML/AI
-torch>=2.1.0
-diffusers>=0.25.0
-transformers>=4.36.0
-accelerate>=0.25.0
+# ML/AI (pinned for torch 2.1.0 compatibility)
+torch==2.1.0
+torchvision==0.16.0
+diffusers==0.21.4
+transformers==4.35.2
+accelerate==0.24.1
+huggingface_hub==0.19.4
 safetensors>=0.4.0
 
 # ControlNet (опционально)
 controlnet-aux>=0.0.7
 
+# Real-ESRGAN Upscaler
+basicsr>=1.4.2
+realesrgan>=0.3.0
+facexlib>=0.2.0
+gfpgan>=1.3.8
+
 # Изображения
 Pillow>=10.2.0
+opencv-python<4.10
+numpy<2
 
 # Утилиты
 pydantic>=2.5.0
+requests>=2.25.0
+tqdm>=4.60.0

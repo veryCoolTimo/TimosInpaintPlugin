@@ -81,8 +81,17 @@ AEI.getSelectedLayerWithMask = function() {
 
         var layer = comp.selectedLayers[0];
 
-        if (!layer.mask || layer.mask.numProperties === 0) {
-            return JSON.stringify({ error: "No mask on selected layer. Draw a mask first (Pen tool)." });
+        var hasMask = layer.mask && layer.mask.numProperties > 0;
+
+        if (!hasMask) {
+            // No mask - return layer info with noMask flag
+            return JSON.stringify({
+                name: layer.name,
+                index: layer.index,
+                width: layer.width,
+                height: layer.height,
+                noMask: true
+            });
         }
 
         var numMasks = layer.mask.numProperties;
@@ -101,6 +110,7 @@ AEI.getSelectedLayerWithMask = function() {
             index: layer.index,
             width: layer.width,
             height: layer.height,
+            noMask: false,
             numMasks: numMasks,
             selectedMaskIndex: selectedMaskIndex,
             selectedMaskName: layer.mask(selectedMaskIndex).name
@@ -200,46 +210,68 @@ AEI.renderLayerSolo = function(layerIndex, outputPath) {
 
     var layer = comp.layer(layerIndex);
     if (!layer) {
-        return JSON.stringify({ error: "Layer not found" });
+        return JSON.stringify({ error: "Layer not found at index " + layerIndex });
+    }
+
+    if (!layer.source) {
+        return JSON.stringify({ error: "Layer has no source" });
     }
 
     try {
-        var maskStates = [];
-        if (layer.mask) {
-            for (var i = 1; i <= layer.mask.numProperties; i++) {
-                maskStates.push(layer.mask(i).maskMode);
-                layer.mask(i).maskMode = MaskMode.NONE;
-            }
-        }
+        // Create a fresh temp comp (avoids all caching/visibility issues)
+        var tempComp = app.project.items.addComp(
+            "_TempExport_" + layerIndex,
+            comp.width,
+            comp.height,
+            comp.pixelAspect,
+            1,  // 1 second duration is enough
+            comp.frameRate
+        );
 
-        var visibility = [];
-        for (var i = 1; i <= comp.numLayers; i++) {
-            visibility.push(comp.layer(i).enabled);
-            comp.layer(i).enabled = (i === layerIndex);
-        }
+        // Add the layer's source footage
+        var tempLayer = tempComp.layers.add(layer.source);
 
+        // Match transform from original layer
+        tempLayer.position.setValue(layer.position.valueAtTime(comp.time, false));
+        tempLayer.anchorPoint.setValue(layer.anchorPoint.valueAtTime(comp.time, false));
+        tempLayer.scale.setValue(layer.scale.valueAtTime(comp.time, false));
+        tempLayer.rotation.setValue(layer.rotation.valueAtTime(comp.time, false));
+        tempLayer.opacity.setValue([100]);
+
+        // For video/sequence sources, set correct time
+        // startTime offsets the layer so the right frame shows at time 0
+        var sourceTime = comp.time - layer.startTime;
+        if (sourceTime < 0) sourceTime = 0;
+        tempLayer.startTime = -sourceTime;
+
+        // Render at time 0
         var file = new File(outputPath);
-        comp.saveFrameToPng(comp.time, file);
+        tempComp.saveFrameToPng(0, file);
 
-        for (var i = 1; i <= comp.numLayers; i++) {
-            comp.layer(i).enabled = visibility[i - 1];
-        }
-
-        if (layer.mask) {
-            for (var i = 1; i <= layer.mask.numProperties; i++) {
-                layer.mask(i).maskMode = maskStates[i - 1];
-            }
-        }
+        // Cleanup
+        tempComp.remove();
 
         return JSON.stringify({ success: true, path: outputPath });
 
     } catch (e) {
-        return JSON.stringify({ error: "Layer render failed: " + e.toString() });
+        // Cleanup on error
+        try {
+            for (var i = app.project.numItems; i >= 1; i--) {
+                var item = app.project.item(i);
+                if (item.name && item.name.indexOf("_TempExport_") === 0) {
+                    item.remove();
+                    break;
+                }
+            }
+        } catch (e2) {}
+
+        return JSON.stringify({ error: "Render failed: " + e.toString() });
     }
 };
 
 // Import PNG as new layer
-AEI.importResultAsLayer = function(pngPath, sourceLayerIndex, layerName) {
+// sourceLayerIndexOrName can be a number (index) or string (name)
+AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName) {
     var comp = app.project.activeItem;
 
     if (!comp || !(comp instanceof CompItem)) {
@@ -252,10 +284,27 @@ AEI.importResultAsLayer = function(pngPath, sourceLayerIndex, layerName) {
             return JSON.stringify({ error: "File not found: " + pngPath });
         }
 
+        // Find source layer by index or name
+        var sourceLayer;
+        if (typeof sourceLayerIndexOrName === 'number') {
+            sourceLayer = comp.layer(sourceLayerIndexOrName);
+        } else {
+            // Find by name
+            for (var i = 1; i <= comp.numLayers; i++) {
+                if (comp.layer(i).name === sourceLayerIndexOrName) {
+                    sourceLayer = comp.layer(i);
+                    break;
+                }
+            }
+        }
+
+        if (!sourceLayer) {
+            return JSON.stringify({ error: "Source layer not found: " + sourceLayerIndexOrName });
+        }
+
         var importOptions = new ImportOptions(file);
         var footage = app.project.importFile(importOptions);
 
-        var sourceLayer = comp.layer(sourceLayerIndex);
         var newLayer = comp.layers.add(footage);
         newLayer.name = layerName || "Inpaint Result";
 
@@ -325,11 +374,133 @@ AEI.testJSXLoaded = function() {
     return JSON.stringify({ loaded: true, version: "1.0" });
 };
 
+// Get selected layer (no mask required) - for upscale
+AEI.getSelectedLayer = function() {
+    try {
+        var comp = app.project.activeItem;
+
+        if (!comp || !(comp instanceof CompItem)) {
+            return JSON.stringify({ error: "No active composition" });
+        }
+
+        if (comp.selectedLayers.length === 0) {
+            return JSON.stringify({ error: "No layer selected" });
+        }
+
+        var layer = comp.selectedLayers[0];
+
+        return JSON.stringify({
+            name: layer.name,
+            index: layer.index,
+            width: layer.width,
+            height: layer.height
+        });
+    } catch (e) {
+        return JSON.stringify({ error: "getSelectedLayer: " + e.toString() });
+    }
+};
+
+// Get all selected layers - for batch upscale
+AEI.getSelectedLayers = function() {
+    try {
+        var comp = app.project.activeItem;
+
+        if (!comp || !(comp instanceof CompItem)) {
+            return JSON.stringify({ error: "No active composition" });
+        }
+
+        if (comp.selectedLayers.length === 0) {
+            return JSON.stringify({ error: "No layers selected" });
+        }
+
+        var layers = [];
+        for (var i = 0; i < comp.selectedLayers.length; i++) {
+            var layer = comp.selectedLayers[i];
+            layers.push({
+                name: layer.name,
+                index: layer.index,
+                width: layer.width,
+                height: layer.height,
+                inPoint: layer.inPoint,
+                outPoint: layer.outPoint,
+                startTime: layer.startTime
+            });
+        }
+
+        return JSON.stringify({
+            layers: layers,
+            count: layers.length
+        });
+    } catch (e) {
+        return JSON.stringify({ error: "getSelectedLayers: " + e.toString() });
+    }
+};
+
+// Export layer frame for upscale (no mask)
+// Can accept layerIndex (number) or layerName (string)
+AEI.exportLayerFrame = function(layerIndexOrName, outputFolder) {
+    var comp = app.project.activeItem;
+
+    if (!comp || !(comp instanceof CompItem)) {
+        return JSON.stringify({ error: "No active composition" });
+    }
+
+    // Find layer by index or name
+    var layer;
+    var layerIndex;
+    if (typeof layerIndexOrName === 'number') {
+        layer = comp.layer(layerIndexOrName);
+        layerIndex = layerIndexOrName;
+    } else {
+        // Find by name
+        for (var i = 1; i <= comp.numLayers; i++) {
+            if (comp.layer(i).name === layerIndexOrName) {
+                layer = comp.layer(i);
+                layerIndex = i;
+                break;
+            }
+        }
+    }
+
+    if (!layer) {
+        return JSON.stringify({ error: "Layer not found: " + layerIndexOrName });
+    }
+
+    var currentFrame = Math.round(comp.time * comp.frameRate);
+    var layerName = layer.name.replace(/[^a-zA-Z0-9]/g, "_");
+    var prefix = layerName + "_frame" + currentFrame + "_" + (new Date().getTime());
+
+    var imagePath = outputFolder + "/" + prefix + ".png";
+
+    var folder = new Folder(outputFolder);
+    if (!folder.exists) {
+        folder.create();
+    }
+
+    // Use current layer index (may have changed)
+    var imageResult = JSON.parse(AEI.renderLayerSolo(layerIndex, imagePath));
+    if (imageResult.error) {
+        return JSON.stringify({ error: "Image export failed: " + imageResult.error });
+    }
+
+    return JSON.stringify({
+        success: true,
+        imagePath: imagePath,
+        frame: currentFrame,
+        compName: comp.name,
+        layerName: layer.name,
+        layerIndex: layerIndex
+    });
+};
+
 // Create global aliases for easier calling
 function getProjectInfo() { return $.global.AEInpaint.getProjectInfo(); }
 function getSelectedLayerWithMask() { return $.global.AEInpaint.getSelectedLayerWithMask(); }
+function getSelectedLayer() { return $.global.AEInpaint.getSelectedLayer(); }
+function getSelectedLayers() { return $.global.AEInpaint.getSelectedLayers(); }
 function renderLayerMask(a,b,c) { return $.global.AEInpaint.renderLayerMask(a,b,c); }
 function renderLayerSolo(a,b) { return $.global.AEInpaint.renderLayerSolo(a,b); }
 function importResultAsLayer(a,b,c) { return $.global.AEInpaint.importResultAsLayer(a,b,c); }
 function exportForInpaint(a,b,c) { return $.global.AEInpaint.exportForInpaint(a,b,c); }
+function exportLayerFrame(a,b) { return $.global.AEInpaint.exportLayerFrame(a,b); }
 function testJSXLoaded() { return $.global.AEInpaint.testJSXLoaded(); }

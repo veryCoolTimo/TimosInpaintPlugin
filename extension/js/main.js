@@ -8,19 +8,23 @@ const fs = require('fs');
 
 let csInterface;
 let isProcessing = false;
+let upscaleCancelled = false;
 let extensionPath = null;
 let serverProcess = null;
+let isFirstRun = true;
+let verboseLog = false; // Set to true for debug logging
 
 const elements = {};
 
+// Local storage key for first run check
+const FIRST_RUN_KEY = 'ae_inpaint_model_downloaded';
+
 function loadJSX() {
-    // Convert file:// URL to regular path
     let extPath = extensionPath;
     if (extPath.startsWith('file://')) {
         extPath = decodeURIComponent(extPath.replace('file://', ''));
     }
 
-    // Resolve real path (for symlinks)
     let jsxPath = path.join(extPath, 'jsx', 'host.jsx');
     try {
         jsxPath = fs.realpathSync(jsxPath);
@@ -32,14 +36,10 @@ function loadJSX() {
 
     try {
         let jsxContent = fs.readFileSync(jsxPath, 'utf8');
-
-        // Remove BOM if present
         if (jsxContent.charCodeAt(0) === 0xFEFF) {
             jsxContent = jsxContent.slice(1);
         }
-
         console.log('JSX content length:', jsxContent.length);
-
         csInterface.evalScript(jsxContent, (result) => {
             console.log('JSX eval result:', result);
         });
@@ -52,7 +52,7 @@ function init() {
     csInterface = new CSInterface();
     extensionPath = csInterface.getSystemPath('extension');
 
-    // Cache elements first
+    // Cache DOM elements - Fill tab
     elements.btnInpaint = document.getElementById('btn-inpaint');
     elements.btnStop = document.getElementById('btn-stop');
     elements.btnToggleSettings = document.getElementById('btn-toggle-settings');
@@ -60,49 +60,146 @@ function init() {
     elements.btnClearCache = document.getElementById('btn-clear-cache');
     elements.btnDebugMode = document.getElementById('btn-debug-mode');
     elements.settingsPanel = document.getElementById('settings-panel');
+    elements.devTools = document.getElementById('dev-tools');
     elements.prompt = document.getElementById('prompt');
+    elements.negativePrompt = document.getElementById('negative-prompt');
     elements.log = document.getElementById('log');
     elements.strength = document.getElementById('strength');
     elements.guidance = document.getElementById('guidance');
     elements.steps = document.getElementById('steps');
+    elements.seed = document.getElementById('seed');
+    elements.feather = document.getElementById('feather');
+    elements.expand = document.getElementById('expand');
+    elements.invertMask = document.getElementById('invert-mask');
+    elements.cropToMask = document.getElementById('crop-to-mask');
+    elements.statusIndicator = document.getElementById('status-indicator');
+    elements.statusText = document.getElementById('status-text');
+    elements.progressOverlay = document.getElementById('progress-overlay');
+    elements.progressText = document.getElementById('progress-text');
+    elements.progressDetail = document.getElementById('progress-detail');
+    elements.firstRunModal = document.getElementById('first-run-modal');
+    elements.btnFirstRunCancel = document.getElementById('btn-first-run-cancel');
+    elements.btnFirstRunContinue = document.getElementById('btn-first-run-continue');
+    elements.btnStopOverlay = document.getElementById('btn-stop-overlay');
 
-    // Load jsx manually (symlink fix)
+    // Cache DOM elements - Upscale tab
+    elements.btnUpscale = document.getElementById('btn-upscale');
+    elements.tabFill = document.getElementById('tab-fill');
+    elements.tabUpscale = document.getElementById('tab-upscale');
+
+    // Check if model was already downloaded
+    try {
+        isFirstRun = localStorage.getItem(FIRST_RUN_KEY) !== 'true';
+    } catch (e) {
+        isFirstRun = true;
+    }
+
+    // Load JSX
     loadJSX();
 
-    // Test basic ExtendScript first
+    // Test ExtendScript
     csInterface.evalScript('app.version', (result) => {
         console.log('AE version:', result);
-        log('AE: ' + result, 'info');
+        log('AE ' + result);
     });
 
-    // Verify JSX loaded after a brief delay
+    // Verify JSX loaded
     setTimeout(() => {
         csInterface.evalScript('typeof getProjectInfo', (result) => {
             console.log('getProjectInfo type:', result);
             if (result === 'function') {
-                log('JSX loaded', 'success');
+                log('Ready');
             } else {
-                log('JSX failed: ' + result, 'error');
+                log('JSX load failed', 'error');
             }
         });
     }, 1000);
 
-    // Event handlers
+    // Event handlers - Fill tab
     elements.btnInpaint.addEventListener('click', handleInpaint);
     elements.btnStop.addEventListener('click', handleStop);
     elements.btnToggleSettings.addEventListener('click', handleToggleSettings);
     elements.btnDebug.addEventListener('click', handleDebugExport);
     elements.btnClearCache.addEventListener('click', handleClearCache);
     elements.btnDebugMode.addEventListener('click', handleToggleDebugMode);
+    elements.btnFirstRunCancel.addEventListener('click', hideFirstRunModal);
+    elements.btnFirstRunContinue.addEventListener('click', handleFirstRunContinue);
+    elements.btnStopOverlay.addEventListener('click', handleStop);
 
+    // Event handlers - Upscale tab
+    elements.btnUpscale.addEventListener('click', handleUpscale);
+
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => handleTabSwitch(tab.dataset.tab));
+    });
+
+    // Setup radio groups with visual feedback
+    setupRadioGroup('mode');
+    setupRadioGroup('scale');
+    setupRadioGroup('upscale-model');
+
+    // Mode change handler (for hiding AI-only settings)
+    document.querySelectorAll('input[name="mode"]').forEach(radio => {
+        radio.addEventListener('change', handleModeChange);
+    });
+
+    // Setup sliders
     setupSlider('strength');
     setupSlider('guidance');
+    setupSlider('steps');
+    setupSlider('feather');
+    setupSlider('expand');
 
-    log('Ready', 'info');
+    // Initial mode setup
+    handleModeChange();
+
+    // Developer console command to show dev tools
+    window.showDevTools = () => {
+        elements.devTools.classList.remove('hidden');
+        log('Dev tools enabled');
+    };
+
+    // Check initial server status
+    updateServerStatus();
+}
+
+// Setup radio button group with active class management
+function setupRadioGroup(name) {
+    const radios = document.querySelectorAll(`input[name="${name}"]`);
+
+    // Update active class based on checked state
+    function updateActiveClass() {
+        radios.forEach(radio => {
+            const label = radio.closest('label');
+            if (label) {
+                label.classList.toggle('active', radio.checked);
+            }
+        });
+    }
+
+    // Add change listeners
+    radios.forEach(radio => {
+        radio.addEventListener('change', updateActiveClass);
+    });
+
+    // Set initial state
+    updateActiveClass();
+}
+
+function handleTabSwitch(tabName) {
+    // Update tab buttons
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.tab === tabName);
+    });
+
+    // Update tab content
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.toggle('active', content.id === `tab-${tabName}`);
+    });
 }
 
 function getProjectPath() {
-    // Convert file:// URL to regular path
     let extPath = extensionPath;
     if (extPath.startsWith('file://')) {
         extPath = decodeURIComponent(extPath.replace('file://', ''));
@@ -115,73 +212,184 @@ function getProjectPath() {
         console.error('realpathSync failed:', e);
     }
     const projectPath = path.dirname(realPath);
-    console.log('extensionPath:', extensionPath);
-    console.log('extPath:', extPath);
-    console.log('realPath:', realPath);
-    console.log('projectPath:', projectPath);
     return projectPath;
 }
 
 function setupSlider(id) {
     const slider = document.getElementById(id);
     const span = document.getElementById(`${id}-value`);
-    slider.addEventListener('input', () => span.textContent = slider.value);
+    if (slider && span) {
+        slider.addEventListener('input', () => span.textContent = slider.value);
+    }
 }
 
+// Simplified logging for users
 function log(msg, type = 'info') {
     const entry = document.createElement('div');
     entry.className = `log-entry ${type}`;
-    entry.textContent = `[${new Date().toLocaleTimeString('en-US', {hour12: false})}] ${msg}`;
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    entry.textContent = `${time} ${msg}`;
     elements.log.appendChild(entry);
     elements.log.scrollTop = elements.log.scrollHeight;
-    while (elements.log.children.length > 50) elements.log.removeChild(elements.log.firstChild);
+    while (elements.log.children.length > 30) {
+        elements.log.removeChild(elements.log.firstChild);
+    }
 }
 
-function showProgress(text) {
-    // Just log status, don't block UI
-    log('>> ' + text, 'info');
+// Verbose logging (only shown when verboseLog is true)
+function logVerbose(msg) {
+    if (verboseLog) {
+        console.log('[verbose]', msg);
+        log(msg, 'info');
+    } else {
+        console.log(msg);
+    }
+}
+
+function showProgress(text, detail = '') {
+    elements.progressOverlay.classList.remove('hidden');
+    elements.progressText.textContent = text;
+    elements.progressDetail.textContent = detail;
     elements.btnInpaint.disabled = true;
-    elements.btnInpaint.textContent = text;
+    if (elements.btnUpscale) elements.btnUpscale.disabled = true;
     isProcessing = true;
 }
 
+function updateProgress(text, detail = '') {
+    elements.progressText.textContent = text;
+    elements.progressDetail.textContent = detail;
+}
+
 function hideProgress() {
+    elements.progressOverlay.classList.add('hidden');
     elements.btnInpaint.disabled = false;
-    elements.btnInpaint.textContent = 'Inpaint';
+    if (elements.btnUpscale) elements.btnUpscale.disabled = false;
     elements.btnStop.classList.add('hidden');
+    elements.btnStopOverlay.classList.add('hidden');
     isProcessing = false;
 }
 
 function showStopButton() {
     elements.btnStop.classList.remove('hidden');
+    elements.btnStopOverlay.classList.remove('hidden');
+}
+
+function updateServerStatus(online = false, loading = false) {
+    elements.statusIndicator.classList.remove('online', 'loading');
+    if (loading) {
+        elements.statusIndicator.classList.add('loading');
+        elements.statusText.textContent = 'Loading...';
+    } else if (online) {
+        elements.statusIndicator.classList.add('online');
+        elements.statusText.textContent = 'Online';
+    } else {
+        elements.statusText.textContent = 'Offline';
+    }
+}
+
+function handleModeChange() {
+    const mode = getMode();
+    const aiOnlyElements = document.querySelectorAll('.ai-only');
+
+    aiOnlyElements.forEach(el => {
+        if (mode === 'ai') {
+            el.classList.remove('mode-hidden');
+        } else {
+            el.classList.add('mode-hidden');
+        }
+    });
+}
+
+function handleToggleSettings() {
+    elements.settingsPanel.classList.toggle('hidden');
+    const isHidden = elements.settingsPanel.classList.contains('hidden');
+    elements.btnToggleSettings.textContent = isHidden ? 'Settings' : 'Hide Settings';
+}
+
+function showFirstRunModal() {
+    elements.firstRunModal.classList.remove('hidden');
+}
+
+function hideFirstRunModal() {
+    elements.firstRunModal.classList.add('hidden');
+}
+
+let firstRunResolve = null;
+
+function handleFirstRunContinue() {
+    hideFirstRunModal();
+    if (firstRunResolve) {
+        firstRunResolve(true);
+        firstRunResolve = null;
+    }
+}
+
+async function checkFirstRun() {
+    if (getMode() !== 'ai') {
+        return true;
+    }
+
+    // Check if model is cached on server
+    try {
+        const health = await API.healthCheck();
+        if (health.model_cached) {
+            isFirstRun = false;
+            return true;
+        }
+    } catch (e) {
+        // Server not running yet, will check later
+    }
+
+    // Check localStorage as fallback
+    if (!isFirstRun) {
+        return true;
+    }
+
+    return new Promise((resolve) => {
+        firstRunResolve = resolve;
+        showFirstRunModal();
+
+        const cancelHandler = () => {
+            hideFirstRunModal();
+            resolve(false);
+            elements.btnFirstRunCancel.removeEventListener('click', cancelHandler);
+        };
+        elements.btnFirstRunCancel.addEventListener('click', cancelHandler);
+    });
+}
+
+function markModelDownloaded() {
+    try {
+        localStorage.setItem(FIRST_RUN_KEY, 'true');
+        isFirstRun = false;
+    } catch (e) {
+        console.error('Failed to save first run flag:', e);
+    }
 }
 
 async function handleStop() {
     if (!isProcessing) return;
-    log('Stopping...', 'info');
-    // Kill the server to stop inference
+    log('Stopping...');
+    upscaleCancelled = true;  // Signal to stop the loop
     stopServer();
     hideProgress();
-    log('Stopped', 'info');
+    log('Stopped');
 }
 
-
-// Start server and wait for it to be ready
 function startServer() {
     return new Promise((resolve, reject) => {
         const projectPath = getProjectPath();
         const venvPython = path.join(projectPath, '.venv', 'bin', 'python');
 
-        log('Project path: ' + projectPath, 'info');
-        log('venv path: ' + venvPython, 'info');
+        logVerbose('Project path: ' + projectPath);
 
         if (!fs.existsSync(venvPython)) {
-            log('venv check failed, exists: ' + fs.existsSync(projectPath), 'error');
-            reject(new Error('venv not found. Run install.sh first.'));
+            reject(new Error('Python venv not found. Run install.sh first.'));
             return;
         }
 
-        log('Starting server...', 'info');
+        log('Starting server...');
+        updateServerStatus(false, true);
 
         serverProcess = spawn(venvPython, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '7860'], {
             cwd: path.join(projectPath, 'server'),
@@ -192,23 +400,30 @@ function startServer() {
 
         serverProcess.stderr.on('data', (data) => {
             const msg = data.toString();
+            logVerbose('[server] ' + msg.trim());
             if (!started && (msg.includes('Uvicorn running') || msg.includes('Application startup complete'))) {
                 started = true;
-                log('Server online', 'success');
+                updateServerStatus(true);
+                log('Server ready', 'success');
                 resolve();
             }
         });
 
+        serverProcess.stdout.on('data', (data) => {
+            logVerbose('[server] ' + data.toString().trim());
+        });
+
         serverProcess.on('error', (err) => {
+            updateServerStatus(false);
             reject(new Error(`Server error: ${err.message}`));
         });
 
         serverProcess.on('exit', (code) => {
             serverProcess = null;
-            log('Server stopped', 'info');
+            updateServerStatus(false);
+            logVerbose('Server stopped');
         });
 
-        // Timeout after 30 seconds
         setTimeout(() => {
             if (!started) {
                 reject(new Error('Server start timeout'));
@@ -219,9 +434,10 @@ function startServer() {
 
 function stopServer() {
     if (serverProcess) {
-        log('Stopping server...', 'info');
+        logVerbose('Stopping server...');
         serverProcess.kill('SIGTERM');
         serverProcess = null;
+        updateServerStatus(false);
     }
 }
 
@@ -234,15 +450,10 @@ async function isServerOnline() {
     }
 }
 
-function handleToggleSettings() {
-    elements.settingsPanel.classList.toggle('hidden');
-    elements.btnToggleSettings.textContent = elements.settingsPanel.classList.contains('hidden') ? 'Settings' : 'Hide Settings';
-}
-
 function evalScript(script) {
     return new Promise((resolve, reject) => {
         csInterface.evalScript(script, (result) => {
-            console.log('evalScript [' + script.substring(0, 30) + '...] result:', result);
+            logVerbose('evalScript result: ' + result?.substring?.(0, 100));
 
             if (result === 'EvalScript error.') {
                 reject(new Error('EvalScript error'));
@@ -255,111 +466,176 @@ function evalScript(script) {
             try {
                 resolve(JSON.parse(result));
             } catch (e) {
-                // Not JSON - return as is
                 resolve(result);
             }
         });
     });
 }
 
+function getMode() {
+    const checked = document.querySelector('input[name="mode"]:checked');
+    return checked ? checked.value : 'ai';
+}
+
 function getSettings() {
+    const seed = parseInt(elements.seed.value);
     return {
         strength: parseFloat(elements.strength.value),
         guidance: parseFloat(elements.guidance.value),
-        steps: parseInt(elements.steps.value)
+        steps: parseInt(elements.steps.value),
+        seed: seed === -1 ? null : seed,
+        feather: parseInt(elements.feather.value),
+        expand: parseInt(elements.expand.value),
+        invertMask: elements.invertMask.checked,
+        cropToMask: elements.cropToMask.checked,
+        negativePrompt: elements.negativePrompt.value.trim()
     };
 }
 
 async function handleInpaint() {
     if (isProcessing) return;
 
+    const mode = getMode();
+
+    // Check first run for AI mode
+    if (mode === 'ai') {
+        const proceed = await checkFirstRun();
+        if (!proceed) {
+            log('Cancelled');
+            return;
+        }
+    }
+
     try {
-        showProgress('Preparing...');
+        showProgress('Preparing...', 'Checking server status');
 
         // Start server if needed
         if (!(await isServerOnline())) {
-            showProgress('Starting server...');
+            showProgress('Starting server...', 'This may take a moment');
             await startServer();
             await new Promise(r => setTimeout(r, 1000));
         }
 
-        log('Starting inpaint...', 'info');
+        log('Starting ' + (mode === 'ai' ? 'AI' : 'Classic') + ' inpaint...');
 
         // 1. Project info
+        showProgress('Preparing...', 'Getting project info');
         let projectInfo;
         try {
             projectInfo = await evalScript('getProjectInfo()');
         } catch (e) {
-            log('getProjectInfo error: ' + e.message, 'error');
-            throw new Error('ExtendScript error. Check log.');
+            throw new Error('ExtendScript error. Reload panel.');
         }
         if (projectInfo.error) throw new Error(projectInfo.error);
-        if (!projectInfo.projectPath) throw new Error('Save project first.');
-        log(`Comp: ${projectInfo.compName}, Frame: ${projectInfo.currentFrame}`, 'info');
+        if (!projectInfo.projectPath) throw new Error('Save project first');
+        log(`${projectInfo.compName}, frame ${projectInfo.currentFrame}`);
 
         // 2. Selected layer with mask
+        showProgress('Preparing...', 'Checking layer and mask');
         const layerInfo = await evalScript('getSelectedLayerWithMask()');
-        log('Layer info: ' + JSON.stringify(layerInfo), 'info');
+        logVerbose('Layer info: ' + JSON.stringify(layerInfo));
         if (layerInfo.error) throw new Error(layerInfo.error);
-        log(`Layer: ${layerInfo.name}, Mask: ${layerInfo.selectedMaskName}`, 'info');
+        log(`Layer: ${layerInfo.name}${layerInfo.noMask ? ' (expand mode)' : ''}`);
 
         // 3. Export
-        showProgress('Exporting...');
         const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
-        log('Cache dir: ' + cacheDir, 'info');
-        const exportResult = await evalScript(
-            `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, "${cacheDir.replace(/\\/g, '/')}")`
-        );
-        log('Export result: ' + JSON.stringify(exportResult), 'info');
-        if (exportResult.error) throw new Error(exportResult.error);
+        let imageBase64, maskBase64;
 
-        // 5. Load images
-        showProgress('Loading...');
-        const imageBase64 = await fileToBase64(exportResult.imagePath);
-        const maskBase64 = await fileToBase64(exportResult.maskPath);
-        log(`Image b64: ${imageBase64.length}, Mask b64: ${maskBase64.length}`, 'info');
+        if (layerInfo.noMask) {
+            // No mask mode: export layer frame, server will generate mask from alpha
+            showProgress('Exporting...', 'Rendering layer (expand mode)');
+            const exportResult = await evalScript(
+                `exportLayerFrame(${layerInfo.index}, "${cacheDir.replace(/\\/g, '/')}")`
+            );
+            let parsed = typeof exportResult === 'string' ? JSON.parse(exportResult) : exportResult;
+            if (parsed.error) throw new Error(parsed.error);
 
-        // 6. Inpaint
-        showProgress('AI processing...');
+            showProgress('Loading...', 'Reading exported file');
+            imageBase64 = await fileToBase64(parsed.imagePath);
+            maskBase64 = '';  // Empty - server generates from alpha
+        } else {
+            // Has mask: export both image and mask
+            showProgress('Exporting...', 'Rendering layer and mask');
+            const exportResult = await evalScript(
+                `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, "${cacheDir.replace(/\\/g, '/')}")`
+            );
+            logVerbose('Export result: ' + JSON.stringify(exportResult));
+            if (exportResult.error) throw new Error(exportResult.error);
+
+            showProgress('Loading...', 'Reading exported files');
+            imageBase64 = await fileToBase64(exportResult.imagePath);
+            maskBase64 = await fileToBase64(exportResult.maskPath);
+            logVerbose(`Image b64: ${imageBase64.length}, Mask b64: ${maskBase64.length}`);
+        }
+
+        // 5. Inpaint
+        const progressText = mode === 'ai' ? 'AI Processing...' : 'Processing...';
+        const progressDetail = mode === 'ai' ? 'This may take 20-40 seconds' : 'Almost instant';
+        showProgress(progressText, progressDetail);
         showStopButton();
-        log('Running inference...', 'info');
 
+        const settings = getSettings();
         const result = await API.inpaint({
             imageBase64,
             maskBase64,
+            mode: mode,
             prompt: elements.prompt.value.trim(),
-            settings: getSettings(),
+            settings: settings,
             cacheDir: projectInfo.projectPath
         });
 
-        log(result.cached ? 'From cache' : 'Inference done', 'success');
+        // Mark model as downloaded after successful AI inference
+        if (mode === 'ai' && !result.cached) {
+            markModelDownloaded();
+        }
 
-        // 7. Save result
-        showProgress('Importing...');
+        log(result.cached ? 'Using cached result' : 'Done', 'success');
+
+        // 6. Save result
+        showProgress('Importing...', 'Saving result file');
         const outputDir = projectInfo.projectPath + '/_AI_OUT';
         const resultPath = `${outputDir}/${projectInfo.compName}_frame${projectInfo.currentFrame}_result.png`;
         await base64ToFile(result.result, resultPath);
 
-        // 8. Import to AE
+        // 7. Import to AE
+        showProgress('Importing...', 'Adding layer to composition');
         const importResult = await evalScript(
             `importResultAsLayer("${resultPath.replace(/\\/g, '/')}", ${layerInfo.index}, "Inpaint Result")`
         );
         if (importResult.error) throw new Error(importResult.error);
 
-        log(`Done: ${importResult.layerName}`, 'success');
+        log(`Created: ${importResult.layerName}`, 'success');
+
+        // Cleanup temp cache files
+        try {
+            const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
+            const fs = require('fs');
+            const path = require('path');
+            if (fs.existsSync(cacheDir)) {
+                const files = fs.readdirSync(cacheDir);
+                files.forEach(file => {
+                    // Only delete image/mask PNGs, keep cache metadata
+                    if (file.endsWith('_image.png') || file.endsWith('_mask.png')) {
+                        fs.unlinkSync(path.join(cacheDir, file));
+                    }
+                });
+                logVerbose('Temp files cleaned');
+            }
+        } catch (e) {
+            logVerbose('Cleanup error: ' + e.message);
+        }
 
     } catch (error) {
-        log(`Error: ${error.message}`, 'error');
+        log(error.message, 'error');
     } finally {
         hideProgress();
-        // Stop server after inpaint
         stopServer();
     }
 }
 
 async function handleDebugExport() {
     try {
-        log('Debug export...', 'info');
+        log('Exporting debug files...');
         const projectInfo = await evalScript('getProjectInfo()');
         if (projectInfo.error) throw new Error(projectInfo.error);
 
@@ -372,10 +648,9 @@ async function handleDebugExport() {
         );
         if (exportResult.error) throw new Error(exportResult.error);
 
-        log(`Image: ${exportResult.imagePath}`, 'success');
-        log(`Mask: ${exportResult.maskPath}`, 'success');
+        log('Exported to _AI_CACHE folder', 'success');
     } catch (error) {
-        log(`Error: ${error.message}`, 'error');
+        log(error.message, 'error');
     }
 }
 
@@ -386,7 +661,7 @@ async function handleClearCache() {
         await API.clearCache(projectInfo.projectPath);
         log('Cache cleared', 'success');
     } catch (error) {
-        log(`Error: ${error.message}`, 'error');
+        log(error.message, 'error');
     }
 }
 
@@ -401,9 +676,153 @@ function handleToggleDebugMode() {
         ].join(' && ');
         exec(cmds, () => {
             elements.btnDebugMode.textContent = `CEP Debug: ${newVal === '1' ? 'ON' : 'OFF'}`;
-            log(`CEP Debug: ${newVal === '1' ? 'ON' : 'OFF'}. Restart AE.`, 'success');
+            log(`CEP Debug ${newVal === '1' ? 'enabled' : 'disabled'}. Restart AE.`, 'success');
         });
     });
+}
+
+function getUpscaleSettings() {
+    const scale = document.querySelector('input[name="scale"]:checked');
+    const modelType = document.querySelector('input[name="upscale-model"]:checked');
+    return {
+        scale: scale ? parseInt(scale.value) : 4,
+        modelType: modelType ? modelType.value : 'anime'
+    };
+}
+
+async function handleUpscale() {
+    if (isProcessing) return;
+
+    upscaleCancelled = false;
+
+    try {
+        showProgress('Preparing...', 'Checking server');
+
+        // Start server once
+        if (!(await isServerOnline())) {
+            showProgress('Starting server...', 'This may take a moment');
+            await startServer();
+            await new Promise(r => setTimeout(r, 1000));
+        }
+
+        const settings = getUpscaleSettings();
+
+        // Get project info
+        showProgress('Preparing...', 'Getting project info');
+        const projectInfo = await evalScript('getProjectInfo()');
+        if (projectInfo.error) throw new Error(projectInfo.error);
+        if (!projectInfo.projectPath) throw new Error('Save project first');
+
+        const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
+        const outputDir = projectInfo.projectPath + '/_AI_OUT';
+
+        // Get all selected layers
+        showProgress('Preparing...', 'Getting layers');
+        const layersInfo = await evalScript('getSelectedLayers()');
+        if (layersInfo.error) throw new Error(layersInfo.error);
+
+        // Sort by descending index - process bottom layers first
+        // This way indices of unprocessed layers don't shift
+        const layers = layersInfo.layers.sort((a, b) => b.index - a.index);
+
+        log(`Upscaling ${layers.length} layer(s) x${settings.scale}`);
+
+        let done = 0;
+
+        for (let i = 0; i < layers.length; i++) {
+            if (upscaleCancelled) {
+                log('Cancelled');
+                break;
+            }
+
+            const layer = layers[i];
+            const num = i + 1;
+
+            log(`[${num}/${layers.length}] ${layer.name}`);
+            showProgress(`${num}/${layers.length}`, `Exporting ${layer.name}...`);
+            showStopButton();
+
+            // Export using INDEX (captured at start, valid because we go bottom-up)
+            let exportResult;
+            try {
+                let rawResult = await evalScript(
+                    `exportLayerFrame(${layer.index}, "${cacheDir.replace(/\\/g, '/')}")`
+                );
+                // Handle case where result is still a string
+                if (typeof rawResult === 'string') {
+                    exportResult = JSON.parse(rawResult);
+                } else {
+                    exportResult = rawResult;
+                }
+            } catch (e) {
+                log(`Export failed: ${e.message}`, 'error');
+                continue;
+            }
+
+            if (!exportResult || exportResult.error) {
+                log(`Export error: ${exportResult?.error || 'Unknown error'}`, 'error');
+                continue;
+            }
+
+            if (!exportResult.imagePath) {
+                log(`Export error: No image path`, 'error');
+                continue;
+            }
+
+            if (upscaleCancelled) break;
+
+            // Read file
+            const imageBase64 = await fileToBase64(exportResult.imagePath);
+            console.log(`Read ${exportResult.imagePath}: ${imageBase64?.length || 0} bytes`);
+
+            if (upscaleCancelled) break;
+
+            // Upscale
+            showProgress(`${num}/${layers.length}`, `Upscaling ${layer.name}...`);
+            let result;
+            try {
+                result = await API.upscale({
+                    imageBase64,
+                    scale: settings.scale,
+                    modelType: settings.modelType
+                });
+            } catch (e) {
+                log(`Upscale error: ${e.message}`, 'error');
+                continue;
+            }
+
+            if (upscaleCancelled) break;
+
+            // Save result (with timestamp to avoid stale files)
+            const safeName = layer.name.replace(/[^a-zA-Z0-9]/g, '_');
+            const resultPath = `${outputDir}/${safeName}_x${settings.scale}_${Date.now()}.png`;
+            await base64ToFile(result.result, resultPath);
+
+            // Import - use the INDEX from export result (current position)
+            showProgress(`${num}/${layers.length}`, `Importing...`);
+            const importResult = await evalScript(
+                `importResultAsLayer("${resultPath.replace(/\\/g, '/')}", ${exportResult.layerIndex}, "${layer.name} x${settings.scale}")`
+            );
+            if (importResult.error) {
+                log(`Import error: ${importResult.error}`, 'error');
+                continue;
+            }
+
+            done++;
+
+            // Small delay for AE to update
+            await new Promise(r => setTimeout(r, 200));
+        }
+
+        log(`Done! ${done}/${layers.length} upscaled`, 'success');
+
+    } catch (error) {
+        console.error('handleUpscale error:', error);
+        log(error.message, 'error');
+    } finally {
+        hideProgress();
+        stopServer();
+    }
 }
 
 document.addEventListener('DOMContentLoaded', init);

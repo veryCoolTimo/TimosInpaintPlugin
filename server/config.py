@@ -14,20 +14,23 @@ ENGINE_TYPE: Literal["diffusers", "comfyui"] = "diffusers"
 # Модели
 # SD 1.5 Inpainting is MUCH faster on Mac MPS (~30 sec vs 17 min for SDXL)
 # SDXL_INPAINT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"  # SLOW on MPS
-# SDXL_INPAINT_MODEL = "runwayml/stable-diffusion-inpainting"  # HuggingFace
-SDXL_INPAINT_MODEL = "/Users/timo/Downloads/sd-v1-5-inpainting.ckpt"  # Local file
+SDXL_INPAINT_MODEL = "runwayml/stable-diffusion-inpainting"  # HuggingFace - auto download
+# SDXL_INPAINT_MODEL = "/Users/timo/Downloads/sd-v1-5-inpainting.ckpt"  # Local file
 CONTROLNET_MODEL = "lllyasviel/control_v11p_sd15_lineart"
 
 # Дефолтные параметры инпейнтинга
-DEFAULT_STRENGTH = 0.85
+DEFAULT_STRENGTH = 1.0  # 1.0 = full regeneration from context (object removal)
 DEFAULT_GUIDANCE_SCALE = 7.5
 DEFAULT_CONTROLNET_SCALE = 0.5
 DEFAULT_NUM_INFERENCE_STEPS = 30
 
-# Негативный промпт для манхвы
+# Негативный промпт для манхвы - агрессивный против галлюцинаций
 DEFAULT_NEGATIVE_PROMPT = (
-    "blurry, low quality, watermark, signature, "
-    "realistic, photo, 3d render, deformed"
+    "person, human, people, man, woman, boy, girl, child, face, body, figure, "
+    "character, animal, creature, monster, "
+    "text, letters, words, logo, watermark, signature, "
+    "blurry, low quality, artifacts, noise, "
+    "realistic, photo, 3d render, deformed, disfigured"
 )
 
 # Пути
