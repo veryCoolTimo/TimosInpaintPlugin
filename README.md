@@ -74,6 +74,19 @@ Click **Settings** to adjust (AI Gen only, except where noted):
 - First run downloads the configured model — size varies a lot by engine
   (LaMa is small and fast to fetch; FLUX.1 Fill and PowerPaint are several
   GB each). Expect a long wait on first use of a given mode.
+- **AI Gen with the default FLUX engine needs a HuggingFace login once**,
+  separately from the download itself: `black-forest-labs/FLUX.1-Fill-dev`
+  is a gated repo. Before AI Gen mode will load:
+  1. Create a free account at https://huggingface.co if you don't have one.
+  2. Open https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev and
+     accept the license (button on that page).
+  3. Create an access token: https://huggingface.co/settings/tokens
+  4. Run `huggingface-cli login` (from the project's `.venv`) and paste
+     the token — or set `HF_TOKEN` in the environment before starting the server.
+
+  Without this, `/load` and the first AI Gen inpaint fail with an error
+  naming that repo — the GGUF transformer download itself works without a
+  token, it's specifically the base pipeline (VAE/text encoders) that's gated.
 - Typical inpaint time varies with mode, image size and engine; AI Gen with
   a diffusion model is meaningfully slower than Remove/Classic.
 - Add a prompt for better results — only used in **AI Gen** mode; Remove and

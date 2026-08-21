@@ -57,10 +57,18 @@ echo ""
 echo "Upgrading pip..."
 pip install --upgrade pip
 
-# Устанавливаем зависимости
+# Устанавливаем зависимости.
+# requirements.lock.txt (если есть) — точные версии, verified working на
+# Apple Silicon; requirements.txt — диапазоны на случай если lock-файл
+# устарел или у тебя другая архитектура/Python. См. server/requirements.lock.txt.
 echo ""
-echo "Installing dependencies..."
-pip install -r "$SERVER_DIR/requirements.txt"
+if [ -f "$SERVER_DIR/requirements.lock.txt" ]; then
+    echo "Installing dependencies (from requirements.lock.txt, verified versions)..."
+    pip install -r "$SERVER_DIR/requirements.lock.txt"
+else
+    echo "Installing dependencies (from requirements.txt, ranged — no lock file found)..."
+    pip install -r "$SERVER_DIR/requirements.txt"
+fi
 
 # Создаём папку для моделей — server/models, а не корневой models/. Раньше
 # здесь создавался PROJECT_DIR/models, но UpscaleEngine на самом деле

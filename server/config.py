@@ -16,7 +16,13 @@ ENGINE_TYPE: Literal["flux", "powerpaint", "diffusers"] = "flux"
 
 # Модели — FLUX.1 Fill dev (default)
 FLUX_GGUF_REPO = "YarvixPA/FLUX.1-Fill-dev-gguf"
-FLUX_GGUF_FILENAME = "flux1-fill-dev-Q5_K_M.gguf"
+# Было "flux1-fill-dev-Q5_K_M.gguf" — этого файла в репозитории нет и,
+# похоже, никогда не было под этим именем (проверено через HF API): доступны
+# Q3_K_S/Q4_0/Q4_1/Q4_K_S/Q5_0/Q5_1/Q5_K_S/Q6_K/Q8_0. Q5_K_S — 8.29GB, что
+# совпадает с комментарием "~8GB" в engines/flux_engine.py, поэтому это,
+# похоже, и был исходный замысел (переименование апстримом или опечатка).
+# Без этого фикса /load падал с 404 при любой попытке использовать FLUX.
+FLUX_GGUF_FILENAME = "flux1-fill-dev-Q5_K_S.gguf"
 FLUX_BASE_MODEL = "black-forest-labs/FLUX.1-Fill-dev"
 FLUX_DEFAULT_GUIDANCE_SCALE = 30.0
 FLUX_DEFAULT_NUM_INFERENCE_STEPS = 28

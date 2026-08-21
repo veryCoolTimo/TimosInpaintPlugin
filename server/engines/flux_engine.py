@@ -1,5 +1,5 @@
 """
-FLUX.1 Fill dev — dedicated inpainting model via GGUF Q5_K_M quantization.
+FLUX.1 Fill dev — dedicated inpainting model via GGUF Q5_K_S quantization.
 Runs on Apple Silicon M4 Pro 24GB with cpu_offload.
 """
 import gc
@@ -51,7 +51,7 @@ def _patch_rope_for_mps():
 class FluxFillEngine(BaseEngine):
     """
     FLUX.1 Fill dev inpainting engine.
-    Uses GGUF Q5_K_M quantization (~8GB) for Apple Silicon compatibility.
+    Uses GGUF Q5_K_S quantization (~8GB) for Apple Silicon compatibility.
 
     Native resolution: 1024x1024 (multiples of 32).
     No negative prompts, no task tokens.
@@ -60,7 +60,7 @@ class FluxFillEngine(BaseEngine):
     def __init__(
         self,
         gguf_repo: str = "YarvixPA/FLUX.1-Fill-dev-gguf",
-        gguf_filename: str = "flux1-fill-dev-Q5_K_M.gguf",
+        gguf_filename: str = "flux1-fill-dev-Q5_K_S.gguf",
         base_model: str = "black-forest-labs/FLUX.1-Fill-dev",
         default_guidance_scale: float = 30.0,
         default_num_inference_steps: int = 28,
@@ -104,7 +104,7 @@ class FluxFillEngine(BaseEngine):
             logger.info("FLUX pipeline already loaded")
             return
 
-        logger.info("Loading FLUX.1 Fill dev (GGUF Q5_K_M)...")
+        logger.info("Loading FLUX.1 Fill dev (GGUF Q5_K_S)...")
 
         # MPS requires fallback for unsupported ops
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
