@@ -291,6 +291,17 @@ textarea::placeholder {
     color: var(--text-tertiary);
 }
 
+/* Keyboard focus — previously only textarea/.input-small had any visible
+   focus state, so tabbing through tabs/mode/scale options and buttons gave
+   no indication of which control was focused. */
+.tab:focus-visible,
+.mode-option:focus-within,
+.scale-option:focus-within,
+.btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 /* ===== Buttons ===== */
 .btn {
     padding: 12px 20px;
@@ -531,11 +542,16 @@ input[type="range"]::-webkit-slider-thumb:active {
     position: relative;
 }
 
-.tooltip:hover {
+.tooltip:hover,
+.tooltip:focus-visible {
     background: var(--bg-elevated);
     color: var(--text-primary);
 }
 
+/* Tooltips previously only appeared on :hover — unreachable by keyboard or
+   touch. tabindex="0" was added on the elements in index.html; this makes
+   focusing them (Tab key) show the same tooltip :hover already gives mouse users. */
+.tooltip:focus-visible::after,
 .tooltip:hover::after {
     content: attr(data-tip);
     position: absolute;

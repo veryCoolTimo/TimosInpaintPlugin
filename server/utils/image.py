@@ -5,6 +5,12 @@ import base64
 import io
 from PIL import Image
 
+# Локальный сервер, единственный клиент — CEP-панель, которая шлёт кадры из
+# AE. Реальные кадры даже в 4K/8K укладываются в десятки МБ; лимит — просто
+# защита от случайного/вредоносного decompression-bomb payload'а, а не
+# ограничение на легитимный размер кадра.
+MAX_BASE64_LENGTH = 100 * 1024 * 1024  # ~100MB base64 (~75MB decoded)
+
 
 def image_to_base64(image: Image.Image, format: str = "PNG") -> str:
     """Конвертирует PIL Image в base64 строку"""
@@ -19,6 +25,12 @@ def base64_to_image(b64_string: str) -> Image.Image:
     # Убираем data:image/png;base64, если есть
     if "," in b64_string:
         b64_string = b64_string.split(",")[1]
+
+    if len(b64_string) > MAX_BASE64_LENGTH:
+        raise ValueError(
+            f"Image payload too large: {len(b64_string)} base64 chars "
+            f"(limit {MAX_BASE64_LENGTH})"
+        )
 
     image_data = base64.b64decode(b64_string)
     image = Image.open(io.BytesIO(image_data))
@@ -50,9 +62,7 @@ def ensure_mask_format(mask: Image.Image, invert: bool = False) -> Image.Image:
         mask: Входная маска
         invert: Инвертировать маску (для AE где маска = что сохранить)
     """
-    if mask.mode == "RGBA":
-        mask = mask.convert("L")
-    elif mask.mode != "L":
+    if mask.mode != "L":
         mask = mask.convert("L")
 
     if invert:
@@ -63,18 +73,17 @@ def ensure_mask_format(mask: Image.Image, invert: bool = False) -> Image.Image:
     return mask
 
 
-def resize_for_model(image: Image.Image, max_size: int = 1024) -> Image.Image:
+def resize_for_model(image: Image.Image, max_size: int = 1024, divisor: int = 8) -> Image.Image:
     """
     Ресайз изображения для модели.
-    SDXL работает лучше с размерами кратными 8.
+    Размеры округляются до кратных divisor (8 для SD, 32 для FLUX).
     """
     w, h = image.size
 
     # Если уже в пределах — не трогаем
     if w <= max_size and h <= max_size:
-        # Делаем размеры кратными 8
-        new_w = (w // 8) * 8
-        new_h = (h // 8) * 8
+        new_w = (w // divisor) * divisor
+        new_h = (h // divisor) * divisor
         if new_w != w or new_h != h:
             return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
         return image
@@ -84,9 +93,9 @@ def resize_for_model(image: Image.Image, max_size: int = 1024) -> Image.Image:
     new_w = int(w * ratio)
     new_h = int(h * ratio)
 
-    # Делаем кратным 8
-    new_w = (new_w // 8) * 8
-    new_h = (new_h // 8) * 8
+    # Делаем кратным divisor
+    new_w = (new_w // divisor) * divisor
+    new_h = (new_h // divisor) * divisor
 
     return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
@@ -138,13 +147,14 @@ def expand_mask(mask: Image.Image, expand_px: int) -> Image.Image:
     return mask
 
 
-def get_mask_bbox(mask: Image.Image, padding: int = 64) -> tuple:
+def get_mask_bbox(mask: Image.Image, padding: int = 64, divisor: int = 8) -> tuple:
     """
     Находит bounding box белой области маски с отступом.
 
     Args:
         mask: Маска в режиме L (grayscale)
         padding: Отступ вокруг маски в пикселях
+        divisor: Размеры округляются до кратных этому числу (8 для SD, 32 для FLUX)
 
     Returns:
         tuple: (x1, y1, x2, y2) или None если маска пустая
@@ -169,13 +179,13 @@ def get_mask_bbox(mask: Image.Image, padding: int = 64) -> tuple:
     x2 = min(mask.width, x_max + padding)
     y2 = min(mask.height, y_max + padding)
 
-    # Делаем размеры кратными 8 для SD
+    # Делаем размеры кратными divisor
     width = x2 - x1
     height = y2 - y1
 
-    # Округляем вверх до кратного 8
-    new_width = ((width + 7) // 8) * 8
-    new_height = ((height + 7) // 8) * 8
+    # Округляем вверх до кратного divisor
+    new_width = ((width + divisor - 1) // divisor) * divisor
+    new_height = ((height + divisor - 1) // divisor) * divisor
 
     # Расширяем bbox если нужно
     extra_w = new_width - width
@@ -195,7 +205,7 @@ def get_mask_bbox(mask: Image.Image, padding: int = 64) -> tuple:
     return (x1, y1, x2, y2)
 
 
-def crop_to_mask(image: Image.Image, mask: Image.Image, padding: int = 64) -> tuple:
+def crop_to_mask(image: Image.Image, mask: Image.Image, padding: int = 64, divisor: int = 8) -> tuple:
     """
     Обрезает изображение и маску по области маски.
 
@@ -203,11 +213,12 @@ def crop_to_mask(image: Image.Image, mask: Image.Image, padding: int = 64) -> tu
         image: Исходное изображение
         mask: Маска
         padding: Отступ вокруг маски
+        divisor: Размеры округляются до кратных этому числу (8 для SD, 32 для FLUX)
 
     Returns:
         tuple: (cropped_image, cropped_mask, bbox) или (image, mask, None) если маска слишком большая
     """
-    bbox = get_mask_bbox(mask, padding)
+    bbox = get_mask_bbox(mask, padding, divisor=divisor)
 
     if bbox is None:
         return image, mask, None

@@ -1,5 +1,5 @@
 """
-Движок инпейнтинга на основе Diffusers + SDXL
+Движок инпейнтинга на основе Diffusers (SD 1.5 / SDXL)
 """
 import logging
 from typing import Optional
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 class DiffusersEngine(BaseEngine):
     """
-    Инпейнтинг через Diffusers с SDXL Inpainting.
-    Опционально поддерживает ControlNet для сохранения lineart.
+    Инпейнтинг через Diffusers.
+    Автоматически выбирает pipeline: SDXL или SD 1.5.
     """
 
     def __init__(
@@ -26,6 +26,7 @@ class DiffusersEngine(BaseEngine):
     ):
         self.model_id = model_id
         self.controlnet_id = controlnet_id
+        self.is_sdxl = "xl" in model_id.lower()
 
         # Определяем устройство
         if device:
@@ -38,88 +39,71 @@ class DiffusersEngine(BaseEngine):
             self.device = "cpu"
 
         self.pipe = None
-        self.controlnet = None
-        self.lineart_processor = None
 
-        logger.info(f"DiffusersEngine initialized, device: {self.device}")
+        logger.info(f"DiffusersEngine initialized, device: {self.device}, SDXL: {self.is_sdxl}")
 
     @property
     def name(self) -> str:
-        return "diffusers"
+        return "sdxl" if self.is_sdxl else "sd15"
 
     @property
     def supports_controlnet(self) -> bool:
-        return self.controlnet is not None
+        return False
 
     def is_loaded(self) -> bool:
         return self.pipe is not None
 
     def load(self) -> None:
-        """Загружает SDXL Inpainting pipeline"""
+        """Загружает Inpainting pipeline"""
         if self.is_loaded():
             logger.info("Model already loaded")
             return
 
         logger.info(f"Loading Inpainting model: {self.model_id}")
 
-        from diffusers import StableDiffusionInpaintPipeline
-
-        # Check if loading from local .ckpt file or HuggingFace
-        is_local_ckpt = self.model_id.endswith('.ckpt') or self.model_id.endswith('.safetensors')
-
         # MPS (Apple Silicon) REQUIRES float32 - float16 causes NaN values
         dtype = torch.float32 if self.device in ["mps", "cpu"] else torch.float16
 
-        if is_local_ckpt:
-            logger.info(f"Loading from local checkpoint: {self.model_id}")
-            self.pipe = StableDiffusionInpaintPipeline.from_single_file(
+        if self.is_sdxl:
+            from diffusers import StableDiffusionXLInpaintPipeline
+            logger.info("Using SDXL Inpainting pipeline")
+            self.pipe = StableDiffusionXLInpaintPipeline.from_pretrained(
                 self.model_id,
                 torch_dtype=dtype,
-                safety_checker=None,
             )
         else:
-            logger.info(f"Loading from HuggingFace: {self.model_id}")
-            self.pipe = StableDiffusionInpaintPipeline.from_pretrained(
-                self.model_id,
-                torch_dtype=dtype,
-                safety_checker=None,
-            )
+            from diffusers import StableDiffusionInpaintPipeline
+            logger.info("Using SD 1.5 Inpainting pipeline")
+            is_local = self.model_id.endswith('.ckpt') or self.model_id.endswith('.safetensors')
+            if is_local:
+                self.pipe = StableDiffusionInpaintPipeline.from_single_file(
+                    self.model_id, torch_dtype=dtype, safety_checker=None,
+                )
+            else:
+                self.pipe = StableDiffusionInpaintPipeline.from_pretrained(
+                    self.model_id, torch_dtype=dtype, safety_checker=None,
+                )
+
+        # Заменяем scheduler на DPM++ 2M Karras — быстрая сходимость,
+        # хорошее качество при 20 шагах (default PNDM требует 30+)
+        from diffusers import DPMSolverMultistepScheduler
+        self.pipe.scheduler = DPMSolverMultistepScheduler.from_config(
+            self.pipe.scheduler.config,
+            algorithm_type="dpmsolver++",
+            use_karras_sigmas=True,
+        )
+        logger.info("Scheduler set to DPM++ 2M Karras")
 
         self.pipe.to(self.device)
 
         # Оптимизации для Mac
         if self.device == "mps":
             self.pipe.enable_attention_slicing()
-            # Note: VAE tiling causes tensor shape errors on MPS, so we don't enable it
-            # float32 alone should prevent NaN issues
-            # Disable safety checker (often causes issues on MPS)
-            self.pipe.safety_checker = None
-            logger.info("MPS optimizations enabled: attention_slicing, safety_checker disabled")
-
-        # Загружаем ControlNet если указан
-        if self.controlnet_id:
-            self._load_controlnet()
+            if hasattr(self.pipe, 'safety_checker'):
+                self.pipe.safety_checker = None
+            logger.info("MPS optimizations enabled: attention_slicing")
 
         logger.info("Model loaded successfully")
-
-    def _load_controlnet(self) -> None:
-        """Загружает ControlNet для lineart"""
-        try:
-            from controlnet_aux import LineartDetector
-
-            logger.info(f"Loading ControlNet: {self.controlnet_id}")
-
-            # Процессор для извлечения lineart
-            self.lineart_processor = LineartDetector.from_pretrained(
-                "lllyasviel/Annotators"
-            )
-
-            logger.info("ControlNet loaded successfully")
-
-        except Exception as e:
-            logger.warning(f"Failed to load ControlNet: {e}")
-            self.controlnet = None
-            self.lineart_processor = None
 
     def unload(self) -> None:
         """Выгружает модель из памяти"""
@@ -127,15 +111,11 @@ class DiffusersEngine(BaseEngine):
             del self.pipe
             self.pipe = None
 
-        if self.controlnet is not None:
-            del self.controlnet
-            self.controlnet = None
-
-        if self.lineart_processor is not None:
-            del self.lineart_processor
-            self.lineart_processor = None
-
-        # Очищаем память
+        # gc.collect() до empty_cache(): на MPS empty_cache() часто не
+        # освобождает память, пока Python не собрал сборщиком мусора сами
+        # объекты (и их MPS-тензоры), на которые ссылался pipe.
+        import gc
+        gc.collect()
         if torch.backends.mps.is_available():
             torch.mps.empty_cache()
         elif torch.cuda.is_available():
@@ -149,11 +129,13 @@ class DiffusersEngine(BaseEngine):
         mask: Image.Image,
         prompt: str = "",
         negative_prompt: str = "",
-        strength: float = 0.85,
+        strength: float = 1.0,
         guidance_scale: float = 7.5,
-        num_inference_steps: int = 30,
+        num_inference_steps: int = 20,
         controlnet_scale: float = 0.5,
         seed: Optional[int] = None,
+        step_callback=None,
+        **kwargs,
     ) -> Image.Image:
         """Выполняет инпейнтинг"""
         if not self.is_loaded():
@@ -168,16 +150,6 @@ class DiffusersEngine(BaseEngine):
         if image.size != mask.size:
             mask = mask.resize(image.size, Image.Resampling.LANCZOS)
 
-        # Промпт по умолчанию для манхвы
-        if not prompt:
-            prompt = "clean background, manga style, high quality lineart"
-
-        if not negative_prompt:
-            negative_prompt = (
-                "blurry, low quality, watermark, signature, "
-                "realistic, photo, 3d render, deformed"
-            )
-
         logger.info(
             f"Running inpaint: size={image.size}, "
             f"strength={strength}, steps={num_inference_steps}, "
@@ -186,17 +158,30 @@ class DiffusersEngine(BaseEngine):
         logger.info(f"Prompt: {prompt}")
         logger.info(f"Negative: {negative_prompt}")
 
+        # Callback для прогресса (diffusers 0.21: callback(step, timestep, latents))
+        def on_step(step, timestep, latents):
+            if step_callback:
+                step_callback(step + 1, num_inference_steps)
+
         # Запускаем инпейнтинг
-        result = self.pipe(
+        w, h = image.size
+        pipe_kwargs = dict(
             prompt=prompt,
             negative_prompt=negative_prompt,
             image=image,
             mask_image=mask,
+            height=h,
+            width=w,
             strength=strength,
             guidance_scale=guidance_scale,
             num_inference_steps=num_inference_steps,
             generator=generator,
-        ).images[0]
+        )
+        if step_callback:
+            pipe_kwargs["callback"] = on_step
+            pipe_kwargs["callback_steps"] = 1
+
+        result = self.pipe(**pipe_kwargs).images[0]
 
         logger.info("Inpaint completed")
 

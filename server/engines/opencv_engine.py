@@ -62,6 +62,7 @@ class OpenCVEngine(BaseEngine):
         num_inference_steps: int = 30,
         controlnet_scale: float = 0.5,
         seed: Optional[int] = None,
+        **kwargs,
     ) -> Image.Image:
         """
         Performs inpainting using OpenCV.

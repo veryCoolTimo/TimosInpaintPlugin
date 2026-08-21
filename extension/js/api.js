@@ -6,19 +6,69 @@ const API = {
     baseUrl: 'http://127.0.0.1:7860',
     timeout: 1800000, // 30 минут для первого запуска (загрузка модели)
 
+    // AbortController for whatever /inpaint or /upscale request is currently
+    // in flight, so handleStop() in main.js can actually cancel it. Fetch's
+    // own `{ timeout: N }` option (used below to previously "time out"
+    // getProgress/healthCheck) doesn't exist in the Fetch API and was
+    // silently ignored — real timeouts need an AbortController too.
+    _activeController: null,
+
+    /**
+     * Прерывает текущий активный запрос /inpaint или /upscale, если есть.
+     */
+    abortCurrent() {
+        if (this._activeController) {
+            this._activeController.abort();
+        }
+    },
+
+    /**
+     * Просит сервер остановить текущую job (проверяется между шагами
+     * генерации). Best-effort — не гарантирует мгновенную остановку.
+     */
+    async cancelJob() {
+        const response = await fetch(`${this.baseUrl}/cancel`, { method: 'POST' });
+        if (!response.ok) throw new Error('Failed to cancel job');
+        return await response.json();
+    },
+
+    /**
+     * Получить прогресс текущей операции
+     */
+    async getProgress() {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        try {
+            const response = await fetch(`${this.baseUrl}/progress`, {
+                method: 'GET',
+                signal: controller.signal
+            });
+            if (!response.ok) return null;
+            return await response.json();
+        } catch {
+            return null;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    },
+
     /**
      * Проверка здоровья сервера
      */
     async healthCheck() {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
         try {
             const response = await fetch(`${this.baseUrl}/health`, {
                 method: 'GET',
-                timeout: 5000
+                signal: controller.signal
             });
             if (!response.ok) throw new Error('Server unhealthy');
             return await response.json();
         } catch (error) {
             throw new Error(`Server unavailable: ${error.message}`);
+        } finally {
+            clearTimeout(timeoutId);
         }
     },
 
@@ -77,11 +127,14 @@ const API = {
             crop_to_mask: settings.cropToMask !== false,  // default true
             crop_padding: 128,
             invert_mask: settings.invertMask || false,
+            fill_transparent: settings.fillTransparent || false,
             cache_dir: cacheDir || null
         };
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+        this._activeController = controller;
+        let timedOut = false;
+        const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, this.timeout);
 
         try {
             const response = await fetch(`${this.baseUrl}/inpaint`, {
@@ -105,9 +158,13 @@ const API = {
         } catch (error) {
             clearTimeout(timeoutId);
             if (error.name === 'AbortError') {
-                throw new Error('Request timeout - inference took too long');
+                // Same controller is used for the timeout deadline and for
+                // abortCurrent() (Stop button) — distinguish which one fired.
+                throw new Error(timedOut ? 'Request timeout - inference took too long' : 'Cancelled');
             }
             throw error;
+        } finally {
+            if (this._activeController === controller) this._activeController = null;
         }
     },
 
@@ -140,7 +197,9 @@ const API = {
         };
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+        this._activeController = controller;
+        let timedOut = false;
+        const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, this.timeout);
 
         try {
             const response = await fetch(`${this.baseUrl}/upscale`, {
@@ -164,9 +223,11 @@ const API = {
         } catch (error) {
             clearTimeout(timeoutId);
             if (error.name === 'AbortError') {
-                throw new Error('Request timeout - upscale took too long');
+                throw new Error(timedOut ? 'Request timeout - upscale took too long' : 'Cancelled');
             }
             throw error;
+        } finally {
+            if (this._activeController === controller) this._activeController = null;
         }
     }
 };

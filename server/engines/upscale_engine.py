@@ -67,13 +67,25 @@ class UpscaleEngine:
         if not model_path.exists():
             logger.info(f"Downloading model {models[model_name]['filename']}...")
             url = models[model_name]['url']
-            response = requests.get(url, stream=True)
+            # Скачиваем во временный файл и переименовываем только при
+            # успехе — раньше частичная/битая загрузка (обрыв сети, 404 с
+            # HTML-страницей ошибки) молча записывалась как валидный .pth,
+            # и следующий запуск считал его валидным навсегда (проверялось
+            # только model_path.exists()).
+            tmp_path = model_path.with_suffix(model_path.suffix + ".part")
+            response = requests.get(url, stream=True, timeout=30)
+            response.raise_for_status()
             total_size = int(response.headers.get('content-length', 0))
 
-            with open(model_path, 'wb') as f:
-                for data in tqdm(response.iter_content(chunk_size=1024),
-                                total=total_size // 1024, unit='KB'):
-                    f.write(data)
+            try:
+                with open(tmp_path, 'wb') as f:
+                    for data in tqdm(response.iter_content(chunk_size=1024),
+                                    total=total_size // 1024, unit='KB'):
+                        f.write(data)
+                tmp_path.rename(model_path)
+            finally:
+                if tmp_path.exists():
+                    tmp_path.unlink()
 
             logger.info(f"Model downloaded: {model_path}")
 
@@ -159,10 +171,16 @@ class UpscaleEngine:
         if not self.is_loaded() or self.current_model != model_type:
             self.load(model_type)
 
-        # Конвертируем PIL в numpy (BGR для OpenCV)
+        # Конвертируем PIL в numpy (BGR для OpenCV).
+        # Раньше grayscale-вход (2D массив, нет image.shape[2]) падал с
+        # IndexError — приводим explicitly к RGB/RGBA сначала.
         import cv2
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGB")
         img_np = np.array(image)
-        if img_np.shape[2] == 4:  # RGBA
+        if img_np.ndim == 2:  # на всякий случай, если convert выше не сработал
+            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
+        elif img_np.shape[2] == 4:  # RGBA
             img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
         else:  # RGB
             img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)

@@ -72,6 +72,7 @@ function init() {
     elements.expand = document.getElementById('expand');
     elements.invertMask = document.getElementById('invert-mask');
     elements.cropToMask = document.getElementById('crop-to-mask');
+    elements.fillTransparent = document.getElementById('fill-transparent');
     elements.statusIndicator = document.getElementById('status-indicator');
     elements.statusText = document.getElementById('status-text');
     elements.progressOverlay = document.getElementById('progress-overlay');
@@ -160,8 +161,21 @@ function init() {
         log('Dev tools enabled');
     };
 
-    // Check initial server status
-    updateServerStatus();
+    // Check initial server status — was previously just defaulting to
+    // "Offline" on every panel open even when the server was already
+    // running from a prior session, since no actual /health call happened.
+    isServerOnline().then(online => updateServerStatus(online));
+}
+
+// Safe wrapper for building ExtendScript string literals from JS values.
+// Previously dynamic values (paths, comp/layer names) were interpolated
+// directly into the evalScript() source string — a `"` or backslash in a
+// composition name would break the generated JSX or, worse, let arbitrary
+// characters escape the string literal into executable ExtendScript.
+// JSON.stringify produces a valid double-quoted JS/ExtendScript string
+// literal with proper escaping.
+function jsxStr(value) {
+    return JSON.stringify(String(value));
 }
 
 // Setup radio button group with active class management
@@ -370,10 +384,55 @@ function markModelDownloaded() {
 async function handleStop() {
     if (!isProcessing) return;
     log('Stopping...');
-    upscaleCancelled = true;  // Signal to stop the loop
-    stopServer();
+    upscaleCancelled = true;  // Signal to stop the batch upscale loop between layers
+
+    // Previously this only hid the progress overlay and set a flag that the
+    // upscale loop checked between layers — the actual /inpaint fetch (and
+    // the server-side generation behind it) kept running to completion, and
+    // could still save a file and import a layer *after* the user had
+    // already been told "Stopped". Now we actually abort the in-flight
+    // request client-side and ask the server to stop generating too.
+    API.abortCurrent();
+    try {
+        await API.cancelJob();
+    } catch (e) {
+        // Best-effort — server may already be done, or unreachable.
+    }
+
     hideProgress();
     log('Stopped');
+    // Server process itself stays running (model stays loaded) for the next request.
+}
+
+function killOrphanServer() {
+    // Kill any leftover process on port 7860 — but only if it's actually
+    // our own uvicorn server. Previously this killed whatever process held
+    // the port unconditionally, which could be an unrelated app that
+    // happened to be using 7860.
+    try {
+        const { execSync } = require('child_process');
+        const pids = execSync("lsof -ti:7860", { timeout: 3000 }).toString().trim();
+        if (!pids) return;
+
+        pids.split('\n').forEach(pid => {
+            pid = pid.trim();
+            if (!pid) return;
+            let cmd = '';
+            try {
+                cmd = execSync(`ps -p ${pid} -o command=`, { timeout: 3000 }).toString();
+            } catch (e) {
+                return; // process already gone
+            }
+            if (cmd.indexOf('uvicorn') !== -1 && cmd.indexOf('main:app') !== -1) {
+                execSync(`kill -9 ${pid}`, { timeout: 3000 });
+                logVerbose('Killed orphan AE Inpaint server process on port 7860: ' + pid);
+            } else {
+                logVerbose(`Process ${pid} holds port 7860 but isn't our server (${cmd.trim()}) — leaving it alone.`);
+            }
+        });
+    } catch (e) {
+        // No process on port — that's fine
+    }
 }
 
 function startServer() {
@@ -387,6 +446,9 @@ function startServer() {
             reject(new Error('Python venv not found. Run install.sh first.'));
             return;
         }
+
+        // Kill any orphaned server process holding the port
+        killOrphanServer();
 
         log('Starting server...');
         updateServerStatus(false, true);
@@ -474,7 +536,7 @@ function evalScript(script) {
 
 function getMode() {
     const checked = document.querySelector('input[name="mode"]:checked');
-    return checked ? checked.value : 'ai';
+    return checked ? checked.value : 'remove';
 }
 
 function getSettings() {
@@ -488,6 +550,7 @@ function getSettings() {
         expand: parseInt(elements.expand.value),
         invertMask: elements.invertMask.checked,
         cropToMask: elements.cropToMask.checked,
+        fillTransparent: elements.fillTransparent.checked,
         negativePrompt: elements.negativePrompt.value.trim()
     };
 }
@@ -497,7 +560,7 @@ async function handleInpaint() {
 
     const mode = getMode();
 
-    // Check first run for AI mode
+    // Check first run for AI Gen mode only (LaMa downloads automatically and is small)
     if (mode === 'ai') {
         const proceed = await checkFirstRun();
         if (!proceed) {
@@ -516,7 +579,8 @@ async function handleInpaint() {
             await new Promise(r => setTimeout(r, 1000));
         }
 
-        log('Starting ' + (mode === 'ai' ? 'AI' : 'Classic') + ' inpaint...');
+        const modeLabels = { remove: 'Remove', ai: 'AI Generate', clean: 'Classic' };
+        log('Starting ' + (modeLabels[mode] || mode) + '...');
 
         // 1. Project info
         showProgress('Preparing...', 'Getting project info');
@@ -545,7 +609,7 @@ async function handleInpaint() {
             // No mask mode: export layer frame, server will generate mask from alpha
             showProgress('Exporting...', 'Rendering layer (expand mode)');
             const exportResult = await evalScript(
-                `exportLayerFrame(${layerInfo.index}, "${cacheDir.replace(/\\/g, '/')}")`
+                `exportLayerFrame(${layerInfo.index}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
             );
             let parsed = typeof exportResult === 'string' ? JSON.parse(exportResult) : exportResult;
             if (parsed.error) throw new Error(parsed.error);
@@ -557,7 +621,7 @@ async function handleInpaint() {
             // Has mask: export both image and mask
             showProgress('Exporting...', 'Rendering layer and mask');
             const exportResult = await evalScript(
-                `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, "${cacheDir.replace(/\\/g, '/')}")`
+                `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
             );
             logVerbose('Export result: ' + JSON.stringify(exportResult));
             if (exportResult.error) throw new Error(exportResult.error);
@@ -569,20 +633,48 @@ async function handleInpaint() {
         }
 
         // 5. Inpaint
-        const progressText = mode === 'ai' ? 'AI Processing...' : 'Processing...';
-        const progressDetail = mode === 'ai' ? 'This may take 20-40 seconds' : 'Almost instant';
-        showProgress(progressText, progressDetail);
+        showProgress('Processing...', 'Starting...');
         showStopButton();
 
+        // Start progress polling
+        let progressInterval = null;
+        if (mode === 'ai') {
+            progressInterval = setInterval(async () => {
+                try {
+                    const prog = await API.getProgress();
+                    if (!prog) return;
+                    if (prog.stage === 'loading_model') {
+                        updateProgress('Loading model...', 'First time takes longer');
+                    } else if (prog.stage === 'inpainting') {
+                        const step = prog.step || 0;
+                        const total = prog.total_steps || 0;
+                        if (total > 0) {
+                            updateProgress(`Generating... ${step}/${total}`, `Step ${step} of ${total}`);
+                        }
+                    } else if (prog.stage === 'upscaling') {
+                        updateProgress('Upscaling...', 'Enhancing quality');
+                    }
+                } catch (e) {}
+            }, 500);
+        } else {
+            const label = mode === 'remove' ? 'Removing...' : 'Processing...';
+            updateProgress(label, '');
+        }
+
         const settings = getSettings();
-        const result = await API.inpaint({
-            imageBase64,
-            maskBase64,
-            mode: mode,
-            prompt: elements.prompt.value.trim(),
-            settings: settings,
-            cacheDir: projectInfo.projectPath
-        });
+        let result;
+        try {
+            result = await API.inpaint({
+                imageBase64,
+                maskBase64,
+                mode: mode,
+                prompt: elements.prompt.value.trim(),
+                settings: settings,
+                cacheDir: projectInfo.projectPath
+            });
+        } finally {
+            if (progressInterval) clearInterval(progressInterval);
+        }
 
         // Mark model as downloaded after successful AI inference
         if (mode === 'ai' && !result.cached) {
@@ -594,13 +686,20 @@ async function handleInpaint() {
         // 6. Save result
         showProgress('Importing...', 'Saving result file');
         const outputDir = projectInfo.projectPath + '/_AI_OUT';
-        const resultPath = `${outputDir}/${projectInfo.compName}_frame${projectInfo.currentFrame}_result.png`;
+        // compName was previously used unsanitized in a filesystem path —
+        // AE composition names can contain "/" and other characters that
+        // aren't safe there (layer names elsewhere in this file already get
+        // sanitized the same way for the same reason, see safeName below).
+        const safeCompName = projectInfo.compName.replace(/[^a-zA-Z0-9]/g, '_');
+        const resultPath = `${outputDir}/${safeCompName}_f${projectInfo.currentFrame}_${Date.now()}.png`;
         await base64ToFile(result.result, resultPath);
 
         // 7. Import to AE
         showProgress('Importing...', 'Adding layer to composition');
+        const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const resultLayerName = `Inpaint ${timestamp}`;
         const importResult = await evalScript(
-            `importResultAsLayer("${resultPath.replace(/\\/g, '/')}", ${layerInfo.index}, "Inpaint Result")`
+            `importResultAsLayer(${jsxStr(resultPath.replace(/\\/g, '/'))}, ${layerInfo.index}, ${jsxStr(resultLayerName)})`
         );
         if (importResult.error) throw new Error(importResult.error);
 
@@ -629,7 +728,6 @@ async function handleInpaint() {
         log(error.message, 'error');
     } finally {
         hideProgress();
-        stopServer();
     }
 }
 
@@ -644,7 +742,7 @@ async function handleDebugExport() {
 
         const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
         const exportResult = await evalScript(
-            `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, "${cacheDir.replace(/\\/g, '/')}")`
+            `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
         );
         if (exportResult.error) throw new Error(exportResult.error);
 
@@ -746,7 +844,7 @@ async function handleUpscale() {
             let exportResult;
             try {
                 let rawResult = await evalScript(
-                    `exportLayerFrame(${layer.index}, "${cacheDir.replace(/\\/g, '/')}")`
+                    `exportLayerFrame(${layer.index}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
                 );
                 // Handle case where result is still a string
                 if (typeof rawResult === 'string') {
@@ -801,7 +899,7 @@ async function handleUpscale() {
             // Import - use the INDEX from export result (current position)
             showProgress(`${num}/${layers.length}`, `Importing...`);
             const importResult = await evalScript(
-                `importResultAsLayer("${resultPath.replace(/\\/g, '/')}", ${exportResult.layerIndex}, "${layer.name} x${settings.scale}")`
+                `importResultAsLayer(${jsxStr(resultPath.replace(/\\/g, '/'))}, ${exportResult.layerIndex}, ${jsxStr(layer.name + ' x' + settings.scale)})`
             );
             if (importResult.error) {
                 log(`Import error: ${importResult.error}`, 'error');
@@ -821,7 +919,6 @@ async function handleUpscale() {
         log(error.message, 'error');
     } finally {
         hideProgress();
-        stopServer();
     }
 }
 

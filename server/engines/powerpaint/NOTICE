@@ -1,0 +1,27 @@
+This directory contains code adapted from two upstream Apache License 2.0
+projects, not written from scratch for AEInpaintPlugin:
+
+- open-mmlab/PowerPaint
+  https://github.com/open-mmlab/PowerPaint
+  Source of: pp_utils.py, utils.py, loaders.py, and the overall PowerPaint
+  task-token / dual-prompt approach used by pipeline_powerpaint_brushnet.py.
+
+- TencentARC/BrushNet
+  https://github.com/TencentARC/BrushNet
+  Source of: brushnet.py (BrushNetModel), and the BrushNet-specific parts of
+  pipeline_powerpaint_brushnet.py.
+
+- unet_2d_blocks.py and unet_2d_condition.py are adapted from internal
+  diffusers modules (huggingface/diffusers, also Apache 2.0), pinned to a
+  specific diffusers version's internal APIs to support BrushNet's
+  conditioning hooks. These are NOT the public diffusers API and will not
+  automatically track upstream diffusers releases — see the warning in
+  server/requirements.txt.
+
+Per the Apache License 2.0 (see LICENSE in this directory), this NOTICE file
+must be preserved and included in redistributions of this code.
+
+No modifications beyond what's needed to integrate with this project's
+engine interface (server/engines/base.py) are intended, but this code has
+not been diffed line-by-line against the current upstream repositories to
+confirm that — treat it as a frozen vendor snapshot, not a maintained fork.

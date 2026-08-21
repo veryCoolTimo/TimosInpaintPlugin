@@ -151,11 +151,12 @@ AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
             comp.pixelAspect
         );
 
+        // Solid must match source layer dimensions so mask coords are in the same space
         var whiteSolid = tempComp.layers.addSolid(
             [1, 1, 1],
             "_WhiteMask_",
-            comp.width,
-            comp.height,
+            layer.width,
+            layer.height,
             comp.pixelAspect
         );
 
@@ -164,18 +165,30 @@ AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
         whiteSolid.scale.setValue(layer.scale.valueAtTime(comp.time, false));
         whiteSolid.rotation.setValue(layer.rotation.valueAtTime(comp.time, false));
 
-        // Add ALL masks from the layer (not just selected one)
+        // Render ONLY the selected mask (maskIndex), using its own mode and
+        // inverted flag. Previously this ignored maskIndex entirely and
+        // rendered ALL masks on the layer merged together with a hardcoded
+        // ADD mode — the "select one mask" behavior promised by the UI/README
+        // never actually happened, and Subtract/Intersect/inverted masks
+        // silently produced the wrong region.
         var numMasks = layer.mask.numProperties;
-        for (var i = 1; i <= numMasks; i++) {
-            var sourceMask = layer.mask(i);
-            var newMask = whiteSolid.mask.addProperty("ADBE Mask Atom");
-
-            newMask.maskPath.setValue(sourceMask.maskPath.valueAtTime(comp.time, false));
-            // Use feather and expansion from AE mask properties
-            newMask.maskFeather.setValue(sourceMask.maskFeather.valueAtTime(comp.time, false));
-            newMask.maskExpansion.setValue(sourceMask.maskExpansion.valueAtTime(comp.time, false));
-            newMask.maskMode = MaskMode.ADD;
+        if (maskIndex < 1 || maskIndex > numMasks) {
+            maskIndex = 1;
         }
+        var sourceMask = layer.mask(maskIndex);
+        var newMask = whiteSolid.mask.addProperty("ADBE Mask Atom");
+
+        newMask.maskPath.setValue(sourceMask.maskPath.valueAtTime(comp.time, false));
+        newMask.maskFeather.setValue(sourceMask.maskFeather.valueAtTime(comp.time, false));
+        newMask.maskExpansion.setValue(sourceMask.maskExpansion.valueAtTime(comp.time, false));
+        // A single mask rendered alone should just be ADD (visible where the
+        // path is) regardless of what mode it had among its siblings on the
+        // source layer — Subtract/Intersect only mean something relative to
+        // other masks being composited together, which we're not doing here.
+        newMask.maskMode = MaskMode.ADD;
+        // "Inverted" is a real, independent property though — preserve it,
+        // or a mask the artist set to inverted renders as its own complement.
+        newMask.inverted = sourceMask.inverted;
 
         tempComp.time = comp.time;
 
@@ -184,7 +197,7 @@ AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
 
         tempComp.remove();
 
-        return JSON.stringify({ success: true, path: outputPath, masksUsed: numMasks });
+        return JSON.stringify({ success: true, path: outputPath, maskIndex: maskIndex, maskName: sourceMask.name });
 
     } catch (e) {
         try {
@@ -218,13 +231,20 @@ AEI.renderLayerSolo = function(layerIndex, outputPath) {
     }
 
     try {
-        // Create a fresh temp comp (avoids all caching/visibility issues)
+        // Compute source time offset FIRST to size the temp comp correctly
+        var sourceTime = comp.time - layer.startTime;
+        if (sourceTime < 0) sourceTime = 0;
+
+        // Temp comp must be long enough so that after startTime offset
+        // the layer still covers render time 0
+        var tempDuration = Math.max(1, sourceTime + 1);
+
         var tempComp = app.project.items.addComp(
             "_TempExport_" + layerIndex,
             comp.width,
             comp.height,
             comp.pixelAspect,
-            1,  // 1 second duration is enough
+            tempDuration,
             comp.frameRate
         );
 
@@ -238,10 +258,7 @@ AEI.renderLayerSolo = function(layerIndex, outputPath) {
         tempLayer.rotation.setValue(layer.rotation.valueAtTime(comp.time, false));
         tempLayer.opacity.setValue([100]);
 
-        // For video/sequence sources, set correct time
-        // startTime offsets the layer so the right frame shows at time 0
-        var sourceTime = comp.time - layer.startTime;
-        if (sourceTime < 0) sourceTime = 0;
+        // For video/sequence sources, offset so the right frame shows at time 0
         tempLayer.startTime = -sourceTime;
 
         // Render at time 0
@@ -314,11 +331,10 @@ AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName) {
         newLayer.inPoint = sourceLayer.inPoint;
         newLayer.outPoint = sourceLayer.outPoint;
 
-        newLayer.position.setValue(sourceLayer.position.valueAtTime(comp.time, false));
-        newLayer.anchorPoint.setValue(sourceLayer.anchorPoint.valueAtTime(comp.time, false));
-        newLayer.scale.setValue(sourceLayer.scale.valueAtTime(comp.time, false));
-        newLayer.rotation.setValue(sourceLayer.rotation.valueAtTime(comp.time, false));
-        newLayer.opacity.setValue(sourceLayer.opacity.valueAtTime(comp.time, false));
+        // Result PNG is already rendered at comp dimensions with correct positioning
+        // (renderLayerSolo bakes layer transform into the comp-sized output).
+        // Do NOT copy source layer transform — it would apply it twice.
+        // Default AE placement (center footage in comp) is correct for comp-sized footage.
 
         return JSON.stringify({
             success: true,

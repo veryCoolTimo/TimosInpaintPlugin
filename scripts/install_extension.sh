@@ -7,14 +7,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 EXTENSION_DIR="$PROJECT_DIR/extension"
 
-# Папка CEP расширений для macOS
-CEP_DIR="$HOME/Library/Application Support/Adobe/CEP/extensions"
-
 # Имя расширения
 EXTENSION_NAME="com.timo.aeinpaint"
 
 echo "=== AE Inpaint Extension - Install ==="
 echo ""
+
+# CEP extensions path below is macOS-specific. Previously this script just
+# ran the same way on any OS and silently did the wrong thing (or nothing
+# useful) on Windows — After Effects on Windows uses
+# %APPDATA%\Adobe\CEP\extensions instead, which this script doesn't handle.
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "Error: this installer only supports macOS."
+    echo "On Windows, the CEP extensions folder is %APPDATA%\\Adobe\\CEP\\extensions —"
+    echo "this script would need a Windows-specific port to install there; it hasn't been written."
+    exit 1
+fi
+
+# Папка CEP расширений для macOS
+CEP_DIR="$HOME/Library/Application Support/Adobe/CEP/extensions"
 
 # Создаём папку CEP если не существует
 mkdir -p "$CEP_DIR"
@@ -54,5 +65,6 @@ echo ""
 echo "Restart After Effects to see the extension:"
 echo "  Window > Extensions > AE Inpaint"
 echo ""
-echo "Don't forget to start the server:"
-echo "  ./scripts/start_server.sh"
+echo "The panel starts the local server itself on first use — no separate"
+echo "step needed. (./scripts/start_server.sh is only for watching server"
+echo "logs directly while developing.)"

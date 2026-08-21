@@ -2,7 +2,7 @@
 Базовый класс для движков инпейнтинга
 """
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, Optional
 from PIL import Image
 
 
@@ -43,6 +43,9 @@ class BaseEngine(ABC):
         num_inference_steps: int = 30,
         controlnet_scale: float = 0.5,
         seed: Optional[int] = None,
+        step_callback: Optional[Callable[[int, int], None]] = None,
+        task: str = "",
+        **kwargs,
     ) -> Image.Image:
         """
         Выполняет инпейнтинг.
@@ -57,6 +60,14 @@ class BaseEngine(ABC):
             num_inference_steps: Количество шагов
             controlnet_scale: Сила ControlNet (0.0-1.0)
             seed: Сид для воспроизводимости
+            step_callback: вызывается как step_callback(step, total) между
+                шагами денойзинга (используется для прогресса и отмены).
+                Игнорируется движками без пошагового инференса (LaMa, OpenCV).
+            task: task-промпт для движков, которые его поддерживают (PowerPaint).
+                Игнорируется остальными.
+            **kwargs: место для параметров, специфичных для конкретного
+                движка, чтобы вызывающий код (main.py) мог передавать их
+                единообразно всем движкам, не проверяя тип каждый раз.
 
         Returns:
             Результат инпейнтинга (RGB)
