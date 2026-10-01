@@ -7,229 +7,122 @@
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <div class="container">
-        <!-- Header -->
-        <div class="header">
-            <h1>AI Tools</h1>
-            <div class="status-indicator" id="status-indicator">
-                <span class="status-dot"></span>
-                <span id="status-text">Offline</span>
-            </div>
+    <header class="topbar">
+        <nav class="tabs" role="tablist">
+            <button class="tab active" data-tab="fill" role="tab">Fill</button>
+            <button class="tab" data-tab="upscale" role="tab">Upscale</button>
+        </nav>
+        <div class="server" id="server-status" title="Local AI server">
+            <span class="server-dot"></span>
+            <span class="server-text" id="server-text">Idle</span>
         </div>
+    </header>
 
-        <!-- Tab Navigation -->
-        <div class="tabs">
-            <button class="tab active" data-tab="fill"><span>Fill</span></button>
-            <button class="tab" data-tab="upscale"><span>Upscale</span></button>
+    <main>
+        <!-- ========== Fill ========== -->
+        <section class="tab-panel active" id="tab-fill" role="tabpanel">
+            <div class="field">
+                <div class="segmented" id="mode" role="radiogroup" aria-label="Mode">
+                    <button data-value="remove" class="active">Remove</button>
+                    <button data-value="ai">Generate</button>
+                    <button data-value="clean">Classic</button>
+                </div>
+                <p class="hint" id="mode-hint"></p>
+            </div>
+
+            <div class="field gen-only">
+                <textarea id="prompt" rows="3" placeholder="What should appear? Leave empty to continue the surroundings."></textarea>
+            </div>
+
+            <div class="action">
+                <button id="btn-inpaint" class="btn primary">Remove</button>
+                <button id="btn-stop" class="btn danger" hidden>Stop</button>
+            </div>
+
+            <div class="progress" id="fill-progress" hidden>
+                <div class="progress-track"><div class="progress-bar"></div></div>
+            </div>
+            <p class="status" id="fill-status"></p>
+
+            <details class="options" id="fill-options">
+                <summary>Options</summary>
+                <div class="grid">
+                    <span class="label">Mask expand</span>
+                    <span class="hot" id="expand" data-min="0" data-max="50" data-default="3" data-unit=" px"
+                          title="Grow the mask so antialiased edges of the object are covered too"></span>
+
+                    <span class="label">Feather</span>
+                    <span class="hot" id="feather" data-min="0" data-max="50" data-default="0" data-unit=" px"
+                          title="Soft blend outside the mask edge"></span>
+
+                    <span class="label gen-only">Steps</span>
+                    <span class="hot gen-only" id="steps" data-min="1" data-max="50" data-default="" data-empty="Auto"
+                          title="Empty = engine default (4 for FLUX.2 klein)"></span>
+
+                    <span class="label gen-only">Guidance</span>
+                    <span class="hot gen-only" id="guidance" data-min="0" data-max="50" data-step="0.5" data-default="" data-empty="Auto"
+                          title="Empty = engine default. FLUX.2 klein ignores it"></span>
+
+                    <span class="label gen-only">Strength</span>
+                    <span class="hot gen-only" id="strength" data-min="0.05" data-max="1" data-step="0.05" data-default="1"
+                          title="1 = repaint fully. Lower keeps more of the original under the mask"></span>
+
+                    <span class="label gen-only">Seed</span>
+                    <span class="hot gen-only" id="seed" data-min="0" data-max="999999999" data-default="" data-empty="Random"
+                          title="Same seed = same result. Empty = random"></span>
+                </div>
+                <label class="check" title="Fill everything except the mask"><input type="checkbox" id="invert-mask"> Invert mask</label>
+                <label class="check"><input type="checkbox" id="fill-transparent" checked> Fill transparent areas</label>
+            </details>
+        </section>
+
+        <!-- ========== Upscale ========== -->
+        <section class="tab-panel" id="tab-upscale" role="tabpanel">
+            <div class="field row">
+                <span class="label">Scale</span>
+                <div class="segmented" id="scale" role="radiogroup" aria-label="Scale">
+                    <button data-value="2">2×</button>
+                    <button data-value="4" class="active">4×</button>
+                </div>
+            </div>
+            <div class="field row">
+                <span class="label">Model</span>
+                <div class="segmented" id="upscale-model" role="radiogroup" aria-label="Model">
+                    <button data-value="anime" class="active">Art</button>
+                    <button data-value="general">Photo</button>
+                </div>
+            </div>
+            <p class="hint">Every selected layer gets an upscaled copy above it, scaled to keep the same framing.</p>
+
+            <div class="action">
+                <button id="btn-upscale" class="btn primary">Upscale selected</button>
+                <button id="btn-upscale-stop" class="btn danger" hidden>Stop</button>
+            </div>
+            <div class="progress" id="upscale-progress" hidden>
+                <div class="progress-track"><div class="progress-bar"></div></div>
+            </div>
+            <p class="status" id="upscale-status"></p>
+        </section>
+    </main>
+
+    <footer>
+        <details class="activity" id="activity">
+            <summary>Activity</summary>
+            <ol id="log"></ol>
+        </details>
+        <div id="dev-tools" hidden>
+            <button id="btn-debug-mode" class="btn small">CEP Debug: OFF</button>
         </div>
+    </footer>
 
-        <!-- ========== Fill Tab ========== -->
-        <div class="tab-content active" id="tab-fill">
-            <!-- Mode Selector -->
-            <div class="section">
-                <div class="mode-selector">
-                    <label class="mode-option active">
-                        <input type="radio" name="mode" value="remove" checked>
-                        <span>Remove</span>
-                    </label>
-                    <label class="mode-option">
-                        <input type="radio" name="mode" value="ai">
-                        <span>AI Gen</span>
-                    </label>
-                    <label class="mode-option">
-                        <input type="radio" name="mode" value="clean">
-                        <span>Classic</span>
-                    </label>
-                </div>
-            </div>
-
-            <!-- Prompt (AI only) -->
-            <div class="section ai-only" id="section-prompt">
-                <label>Prompt</label>
-                <textarea id="prompt" placeholder="Describe what should appear..."></textarea>
-            </div>
-
-            <!-- Negative Prompt (AI only) -->
-            <div class="section ai-only" id="section-negative">
-                <label>Negative</label>
-                <textarea id="negative-prompt" placeholder="What to avoid...">person, human, character, face, body, animal, text, watermark, blurry</textarea>
-            </div>
-
-            <!-- Main Action -->
-            <div class="section">
-                <div class="btn-row">
-                    <button id="btn-inpaint" class="btn btn-primary btn-large">
-                        Inpaint
-                    </button>
-                    <button id="btn-stop" class="btn btn-danger hidden">
-                        Stop
-                    </button>
-                </div>
-            </div>
-
-            <!-- Settings Toggle -->
-            <div class="section">
-                <button id="btn-toggle-settings" class="btn btn-secondary btn-small">
-                    Settings
-                </button>
-            </div>
-
-            <!-- Settings Panel -->
-            <div class="section settings-panel hidden" id="settings-panel">
-                <!-- AI Settings -->
-                <div class="ai-only">
-                    <div class="setting">
-                        <div class="setting-label">
-                            <label>Strength<span class="tooltip" tabindex="0" data-tip="1.0 = full regeneration (object removal). Lower = preserve more original">?</span></label>
-                            <span class="value" id="strength-value">1.0</span>
-                        </div>
-                        <input type="range" id="strength" min="0.3" max="1.0" step="0.05" value="1.0">
-                    </div>
-
-                    <div class="setting">
-                        <div class="setting-label">
-                            <label>Guidance<span class="tooltip" tabindex="0" data-tip="How closely to follow prompt">?</span></label>
-                            <span class="value" id="guidance-value">Auto</span>
-                        </div>
-                        <input type="range" id="guidance" min="1" max="30" step="0.5" value="7.5" data-auto="true">
-                    </div>
-
-                    <div class="setting">
-                        <div class="setting-label">
-                            <label>Steps<span class="tooltip" tabindex="0" data-tip="More = better quality, slower">?</span></label>
-                            <span class="value" id="steps-value">Auto</span>
-                        </div>
-                        <input type="range" id="steps" min="1" max="50" step="1" value="20" data-auto="true">
-                    </div>
-
-                    <div class="setting">
-                        <div class="setting-label">
-                            <label>Seed<span class="tooltip" tabindex="0" data-tip="Same seed = same result">?</span></label>
-                        </div>
-                        <input type="number" id="seed" min="-1" max="999999999" value="-1" class="input-small">
-                    </div>
-
-                    <div class="divider"></div>
-                </div>
-
-                <!-- Mask Settings -->
-                <div class="setting">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="invert-mask">
-                        <span>Invert mask<span class="tooltip" tabindex="0" data-tip="Swap what counts as masked vs kept. Turn this on if the wrong area gets filled.">?</span></span>
-                    </label>
-                </div>
-
-                <div class="setting">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="crop-to-mask" checked>
-                        <span>Crop to mask<span class="tooltip" tabindex="0" data-tip="Faster processing">?</span></span>
-                    </label>
-                </div>
-
-                <div class="setting">
-                    <label class="checkbox-label">
-                        <input type="checkbox" id="fill-transparent">
-                        <span>Fill transparent<span class="tooltip" tabindex="0" data-tip="Keep generated content in transparent areas under mask">?</span></span>
-                    </label>
-                </div>
-
-                <div class="setting">
-                    <div class="setting-label">
-                        <label>Feather<span class="tooltip" tabindex="0" data-tip="Blur mask edges">?</span></label>
-                        <span class="value" id="feather-value">0</span>
-                    </div>
-                    <input type="range" id="feather" min="0" max="50" step="1" value="0">
-                </div>
-
-                <div class="setting">
-                    <div class="setting-label">
-                        <label>Expand<span class="tooltip" tabindex="0" data-tip="Grow mask area">?</span></label>
-                        <span class="value" id="expand-value">0</span>
-                    </div>
-                    <input type="range" id="expand" min="0" max="50" step="1" value="0">
-                </div>
-            </div>
-        </div>
-
-        <!-- ========== Upscale Tab ========== -->
-        <div class="tab-content" id="tab-upscale">
-            <!-- Scale Selector -->
-            <div class="section">
-                <label>Scale</label>
-                <div class="scale-selector">
-                    <label class="scale-option">
-                        <input type="radio" name="scale" value="2">
-                        <span>x2</span>
-                    </label>
-                    <label class="scale-option active">
-                        <input type="radio" name="scale" value="4" checked>
-                        <span>x4</span>
-                    </label>
-                </div>
-            </div>
-
-            <!-- Model Type Selector -->
-            <div class="section">
-                <label>Model</label>
-                <div class="mode-selector">
-                    <label class="mode-option active">
-                        <input type="radio" name="upscale-model" value="anime" checked>
-                        <span>Anime</span>
-                    </label>
-                    <label class="mode-option">
-                        <input type="radio" name="upscale-model" value="general">
-                        <span>General</span>
-                    </label>
-                </div>
-            </div>
-
-            <!-- Main Action -->
-            <div class="section">
-                <button id="btn-upscale" class="btn btn-primary btn-large">
-                    Upscale
-                </button>
-            </div>
-
-            <!-- Info -->
-            <div class="section">
-                <p class="section-title" style="text-align: center; color: var(--text-tertiary); font-size: 11px;">
-                    Real-ESRGAN upscaling. Anime model optimized for manga/manhwa.
-                </p>
-            </div>
-        </div>
-
-        <!-- Log -->
-        <div class="section">
-            <div class="log-container">
-                <div id="log"></div>
-            </div>
-        </div>
-
-        <!-- Dev Tools (hidden) -->
-        <div class="section hidden" id="dev-tools">
-            <button id="btn-debug-mode" class="btn btn-secondary btn-small">CEP Debug: OFF</button>
-        </div>
-    </div>
-
-    <!-- Progress Overlay -->
-    <div id="progress-overlay" class="overlay hidden">
-        <div class="progress-container">
-            <div class="spinner"></div>
-            <div id="progress-text">Processing...</div>
-            <div id="progress-detail" class="progress-detail"></div>
-            <button id="btn-stop-overlay" class="btn btn-secondary btn-small hidden">Cancel</button>
-        </div>
-    </div>
-
-    <!-- First Run Modal -->
-    <div id="first-run-modal" class="overlay hidden">
-        <div class="modal">
-            <h3>First Run</h3>
-            <p>AI Gen uses FLUX.2 klein 4B: about 16 GB is downloaded once. This may take a while depending on your connection.</p>
-            <div class="modal-buttons">
-                <button id="btn-first-run-cancel" class="btn btn-secondary">Cancel</button>
-                <button id="btn-first-run-continue" class="btn btn-primary">Continue</button>
+    <!-- First run: model download notice -->
+    <div class="modal-backdrop" id="first-run-modal" hidden>
+        <div class="modal" role="dialog" aria-labelledby="first-run-title">
+            <h2 id="first-run-title">Download the AI model?</h2>
+            <p>Generate uses FLUX.2 klein 4B. About 16 GB is downloaded once; it can take a while.</p>
+            <div class="modal-actions">
+                <button id="btn-first-run-cancel" class="btn">Not now</button>
+                <button id="btn-first-run-continue" class="btn primary">Download</button>
             </div>
         </div>
     </div>
@@ -237,6 +130,7 @@
     <script src="js/CSInterface.js"></script>
     <script src="js/files.js"></script>
     <script src="js/api.js"></script>
+    <script src="js/ui.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>

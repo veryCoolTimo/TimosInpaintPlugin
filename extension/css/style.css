@@ -1,715 +1,519 @@
-/* AE Inpaint - Apple Minimalist Style */
-
+/*
+ * AE Inpaint panel.
+ *
+ * Палитра повторяет панели After Effects и подстраивается под яркость
+ * интерфейса AE: ui.js читает цвет фона панели (appSkinInfo) и
+ * переопределяет --bg/--surface/--line/--text. Значения ниже — тёмная тема
+ * AE 2024 по умолчанию (и превью в обычном браузере).
+ */
 :root {
-    /* Dark theme - Apple style */
-    --bg-primary: #1c1c1e;
-    --bg-secondary: #2c2c2e;
-    --bg-tertiary: #3a3a3c;
-    --bg-elevated: #48484a;
-
-    --text-primary: #ffffff;
-    --text-secondary: rgba(255, 255, 255, 0.6);
-    --text-tertiary: rgba(255, 255, 255, 0.4);
-
-    --accent: #0a84ff;
-    --accent-hover: #409cff;
-    --accent-active: #0071e3;
-
-    --success: #30d158;
-    --warning: #ffd60a;
-    --danger: #ff453a;
-
-    --border: rgba(255, 255, 255, 0.1);
-    --border-strong: rgba(255, 255, 255, 0.2);
-
-    --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
-
-    --radius-sm: 6px;
-    --radius-md: 10px;
-    --radius-lg: 14px;
-
-    --transition: 0.2s ease;
+    --bg: #232323;
+    --surface: #2b2b2b;
+    --surface-hover: #333333;
+    --field: #1a1a1a;
+    --line: #3a3a3a;
+    --text: #c8c8c8;
+    --text-strong: #e6e6e6;
+    --text-dim: #8a8a8a;
+    --accent: #2d8ceb;
+    --accent-hover: #4a9ff0;
+    --hot: #4ca2f5;          /* синие перетаскиваемые числа, как в Timeline */
+    --danger: #d9534f;
+    --ok: #4caf6e;
+    --warn: #e0a440;
+    --radius: 3px;
+    --font: -apple-system, BlinkMacSystemFont, "Adobe Clean", "Segoe UI", sans-serif;
 }
 
 * {
-    margin: 0;
-    padding: 0;
     box-sizing: border-box;
 }
 
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    font-size: 13px;
-    font-weight: 400;
-    background-color: var(--bg-primary);
-    color: var(--text-primary);
-    line-height: 1.4;
-    -webkit-font-smoothing: antialiased;
-    overflow-x: hidden;
+html, body {
+    margin: 0;
+    height: 100%;
 }
 
-.container {
-    padding: 16px;
+body {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    max-width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.4 var(--font);
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
 }
 
-/* ===== Header ===== */
-.header {
+[hidden] {
+    display: none !important;
+}
+
+button {
+    font: inherit;
+    color: inherit;
+}
+
+/* Тонкое кольцо фокуса в цвет акцента вместо толстой рамки Chrome — и
+   только при навигации с клавиатуры */
+:focus {
+    outline: none;
+}
+
+:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+    border-radius: var(--radius);
+}
+
+.btn.primary:focus-visible,
+.hot:focus-visible,
+.check input:focus-visible {
+    outline-offset: 1px;
+}
+
+/* ---------- Top bar ---------- */
+
+.topbar {
     display: flex;
+    align-items: center;
     justify-content: space-between;
-    align-items: center;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--line);
+    flex: none;
 }
 
-.header h1 {
-    font-size: 17px;
-    font-weight: 600;
-    letter-spacing: -0.4px;
-}
-
-/* Status Indicator */
-.status-indicator {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    padding: 4px 10px;
-    background: var(--bg-secondary);
-    border-radius: 100px;
-}
-
-.status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background-color: var(--danger);
-    transition: background-color var(--transition);
-}
-
-.status-indicator.online .status-dot {
-    background-color: var(--success);
-}
-
-.status-indicator.loading .status-dot {
-    background-color: var(--warning);
-    animation: pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(0.8); }
-}
-
-/* ===== Tab Navigation ===== */
 .tabs {
     display: flex;
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    padding: 3px;
+    gap: 14px;
 }
 
 .tab {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 10px 16px;
-    border-radius: calc(var(--radius-md) - 2px);
-    cursor: pointer;
-    transition: all var(--transition);
+    background: none;
     border: none;
-    background: transparent;
-    font-family: inherit;
+    border-bottom: 2px solid transparent;
+    padding: 8px 0 6px;
+    color: var(--text-dim);
+    cursor: pointer;
 }
 
-.tab span {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    transition: color var(--transition);
+.tab:hover {
+    color: var(--text);
 }
 
 .tab.active {
-    background: var(--bg-tertiary);
-    box-shadow: var(--shadow);
+    color: var(--text-strong);
+    border-bottom-color: var(--accent);
 }
 
-.tab.active span {
-    color: var(--text-primary);
-}
-
-.tab:hover:not(.active) span {
-    color: var(--text-primary);
-}
-
-/* Tab Content */
-.tab-content {
-    display: none;
-}
-
-.tab-content.active {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-/* ===== Mode Selector (Segmented Control) ===== */
-.mode-selector {
-    display: flex;
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    padding: 3px;
-    position: relative;
-}
-
-.mode-option {
-    flex: 1;
+.server {
     display: flex;
     align-items: center;
-    justify-content: center;
-    padding: 10px 16px;
-    border-radius: calc(var(--radius-md) - 2px);
-    cursor: pointer;
-    transition: all var(--transition);
-    position: relative;
-    z-index: 1;
-}
-
-.mode-option input[type="radio"] {
-    display: none;
-}
-
-.mode-option span {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    transition: color var(--transition);
-}
-
-.mode-option.active {
-    background: var(--bg-tertiary);
-    box-shadow: var(--shadow);
-}
-
-.mode-option.active span {
-    color: var(--text-primary);
-}
-
-.mode-option:hover:not(.active) span {
-    color: var(--text-primary);
-}
-
-/* ===== Scale Selector ===== */
-.scale-selector {
-    display: flex;
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    padding: 3px;
-}
-
-.scale-option {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 10px 16px;
-    border-radius: calc(var(--radius-md) - 2px);
-    cursor: pointer;
-    transition: all var(--transition);
-}
-
-.scale-option input[type="radio"] {
-    display: none;
-}
-
-.scale-option span {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    transition: color var(--transition);
-}
-
-.scale-option.active {
-    background: var(--accent);
-    box-shadow: var(--shadow);
-}
-
-.scale-option.active span {
-    color: white;
-}
-
-.scale-option:hover:not(.active) span {
-    color: var(--text-primary);
-}
-
-/* ===== Sections ===== */
-.section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.section > label {
+    gap: 5px;
     font-size: 11px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    color: var(--text-dim);
 }
 
-/* ===== Text Areas ===== */
+.server-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--line);
+}
+
+.server.online .server-dot { background: var(--ok); }
+.server.starting .server-dot { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+
+@keyframes pulse {
+    50% { opacity: 0.35; }
+}
+
+/* ---------- Layout ---------- */
+
+main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    scroll-padding-top: 8px;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+.field {
+    margin-bottom: 10px;
+}
+
+.field.row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.field.row .label {
+    width: 42px;
+}
+
+.field.row .segmented {
+    flex: 1;
+}
+
+.label {
+    color: var(--text-dim);
+}
+
+.hint {
+    margin: 6px 0 0;
+    color: var(--text-dim);
+    font-size: 11px;
+}
+
+.tab-panel > .hint {
+    margin: 0 0 12px;
+}
+
+/* ---------- Segmented control ---------- */
+
+.segmented {
+    display: flex;
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1px;
+}
+
+.segmented button {
+    flex: 1;
+    background: none;
+    border: none;
+    border-radius: 2px;
+    padding: 4px 0;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.segmented button:hover:not(:disabled) {
+    color: var(--text);
+}
+
+.segmented button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.segmented button.active {
+    background: var(--surface-hover);
+    color: var(--text-strong);
+}
+
+/* ---------- Inputs ---------- */
+
 textarea {
+    display: block;
     width: 100%;
-    min-height: 56px;
-    padding: 12px;
-    background: var(--bg-secondary);
-    border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    color: var(--text-primary);
-    font-family: inherit;
-    font-size: 13px;
-    resize: none;
-    transition: all var(--transition);
-}
-
-textarea:hover {
-    border-color: var(--border-strong);
-}
-
-textarea:focus {
-    outline: none;
-    border-color: var(--accent);
-    background: var(--bg-tertiary);
+    resize: vertical;
+    min-height: 44px;
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 6px 7px;
+    color: var(--text-strong);
+    font: inherit;
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 textarea::placeholder {
-    color: var(--text-tertiary);
+    color: var(--text-dim);
 }
 
-/* Keyboard focus — previously only textarea/.input-small had any visible
-   focus state, so tabbing through tabs/mode/scale options and buttons gave
-   no indication of which control was focused. */
-.tab:focus-visible,
-.mode-option:focus-within,
-.scale-option:focus-within,
-.btn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-}
-
-/* ===== Buttons ===== */
-.btn {
-    padding: 12px 20px;
-    border: none;
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 500;
-    transition: all var(--transition);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-}
-
-.btn:active {
-    transform: scale(0.98);
-}
-
-.btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-    transform: none;
-}
-
-.btn-primary {
-    background: var(--accent);
-    color: white;
-}
-
-.btn-primary:hover:not(:disabled) {
-    background: var(--accent-hover);
-}
-
-.btn-primary:active:not(:disabled) {
-    background: var(--accent-active);
-}
-
-.btn-secondary {
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-}
-
-.btn-secondary:hover:not(:disabled) {
-    background: var(--bg-tertiary);
-}
-
-.btn-danger {
-    background: var(--danger);
-    color: white;
-}
-
-.btn-danger:hover:not(:disabled) {
-    background: #ff6961;
-}
-
-.btn-large {
-    padding: 16px 24px;
-    font-size: 15px;
-    font-weight: 600;
-    border-radius: var(--radius-lg);
-}
-
-.btn-small {
-    padding: 8px 14px;
-    font-size: 12px;
-    border-radius: var(--radius-sm);
-}
-
-.btn-row {
-    display: flex;
-    gap: 10px;
-}
-
-.btn-row .btn-primary {
-    flex: 1;
-}
-
-.btn-group {
-    display: flex;
-    gap: 8px;
-}
-
-/* ===== Settings Panel ===== */
-.settings-panel {
-    background: var(--bg-secondary);
-    border-radius: var(--radius-lg);
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.settings-panel.hidden {
-    display: none;
-}
-
-.divider {
-    height: 1px;
-    background: var(--border);
-    margin: 4px 0;
-}
-
-/* ===== Settings Controls ===== */
-.setting {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.setting-label {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-.setting-label label {
-    font-size: 13px;
-    font-weight: 400;
-    color: var(--text-primary);
-}
-
-.setting-label .value {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    min-width: 40px;
-    text-align: right;
-}
-
-/* Sliders */
-input[type="range"] {
-    -webkit-appearance: none;
-    width: 100%;
-    height: 4px;
-    background: var(--bg-tertiary);
-    border-radius: 2px;
-    outline: none;
-}
-
-input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 18px;
-    height: 18px;
-    background: white;
-    border-radius: 50%;
-    cursor: pointer;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
-    transition: transform var(--transition);
-}
-
-input[type="range"]::-webkit-slider-thumb:hover {
-    transform: scale(1.1);
-}
-
-input[type="range"]::-webkit-slider-thumb:active {
-    transform: scale(0.95);
-}
-
-/* Number inputs */
-.input-small {
-    width: 70px;
-    padding: 8px 12px;
-    background: var(--bg-tertiary);
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font-family: inherit;
-    font-size: 13px;
-    text-align: center;
-}
-
-.input-small:hover {
-    border-color: var(--border-strong);
-}
-
-.input-small:focus {
+textarea:focus, .hot-input:focus {
     outline: none;
     border-color: var(--accent);
 }
 
-/* Checkbox */
-.checkbox-label {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+/* ---------- Buttons ---------- */
+
+.btn {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 5px 12px;
     cursor: pointer;
-    padding: 8px 0;
 }
 
-.checkbox-label input[type="checkbox"] {
-    -webkit-appearance: none;
-    width: 22px;
-    height: 22px;
-    background: var(--bg-tertiary);
-    border-radius: 6px;
-    cursor: pointer;
-    position: relative;
-    transition: background var(--transition);
+.btn:hover:not(:disabled) {
+    background: var(--surface-hover);
 }
 
-.checkbox-label input[type="checkbox"]:checked {
+.btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.btn.primary {
     background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
 }
 
-.checkbox-label input[type="checkbox"]:checked::after {
-    content: '';
-    position: absolute;
-    left: 7px;
-    top: 4px;
-    width: 5px;
-    height: 10px;
-    border: solid white;
-    border-width: 0 2px 2px 0;
-    transform: rotate(45deg);
+.btn.primary:hover:not(:disabled) {
+    background: var(--accent-hover);
 }
 
-.checkbox-label span {
-    font-size: 13px;
-    color: var(--text-primary);
+.btn.danger {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: none;
 }
 
-/* Tooltips */
-.tooltip {
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--bg-tertiary);
-    border-radius: 50%;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    cursor: help;
-    margin-left: 6px;
-    position: relative;
-}
-
-.tooltip:hover,
-.tooltip:focus-visible {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-}
-
-/* Tooltips previously only appeared on :hover — unreachable by keyboard or
-   touch. tabindex="0" was added on the elements in index.html; this makes
-   focusing them (Tab key) show the same tooltip :hover already gives mouse users. */
-.tooltip:focus-visible::after,
-.tooltip:hover::after {
-    content: attr(data-tip);
-    position: absolute;
-    bottom: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 8px 12px;
-    background: var(--bg-elevated);
-    border-radius: var(--radius-sm);
+.btn.small {
+    padding: 3px 8px;
     font-size: 11px;
-    font-weight: 400;
-    white-space: nowrap;
-    z-index: 100;
-    box-shadow: var(--shadow-lg);
 }
 
-/* ===== Log ===== */
-.log-container {
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    padding: 10px 12px;
-    max-height: 80px;
-    overflow-y: auto;
-}
-
-#log {
-    font-family: "SF Mono", Monaco, "Fira Code", monospace;
-    font-size: 10px;
-    line-height: 1.6;
-}
-
-.log-entry {
-    margin-bottom: 2px;
-    color: var(--text-secondary);
-}
-
-.log-entry.success { color: var(--success); }
-.log-entry.warning { color: var(--warning); }
-.log-entry.error { color: var(--danger); }
-
-/* ===== Progress Overlay ===== */
-.overlay {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.75);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+.action {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 1000;
+    gap: 6px;
 }
 
-.overlay.hidden {
+.action .btn {
+    flex: 1;
+    height: 28px;
+}
+
+/* ---------- Progress & status ---------- */
+
+.progress {
+    margin-top: 8px;
+}
+
+.progress-track {
+    height: 3px;
+    background: var(--field);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.2s ease;
+}
+
+/* Без известного числа шагов — бегущая полоска */
+.progress.indeterminate .progress-bar {
+    width: 30%;
+    animation: slide 1.2s ease-in-out infinite;
+}
+
+@keyframes slide {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(340%); }
+}
+
+.status {
+    min-height: 16px;
+    margin: 6px 0 0;
+    font-size: 11px;
+    color: var(--text-dim);
+    word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.status:empty {
     display: none;
 }
 
-.progress-container {
-    display: flex;
-    flex-direction: column;
+.status.error { color: var(--danger); }
+.status.success { color: var(--text); }
+
+/* ---------- Disclosure sections ---------- */
+
+details > summary {
+    list-style: none;
+    cursor: pointer;
+    color: var(--text-dim);
+    padding: 4px 0;
+}
+
+details > summary::-webkit-details-marker {
+    display: none;
+}
+
+details > summary::before {
+    content: "";
+    display: inline-block;
+    width: 0;
+    height: 0;
+    margin: 0 6px 1px 1px;
+    border-left: 4px solid currentColor;
+    border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent;
+    transition: transform 0.1s;
+}
+
+details[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+details > summary:hover {
+    color: var(--text);
+}
+
+.options {
+    margin-top: 12px;
+    border-top: 1px solid var(--line);
+    padding-top: 6px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 5px 12px;
     align-items: center;
-    gap: 16px;
-    padding: 32px;
+    padding: 4px 0 6px 13px;
 }
 
-.spinner {
-    width: 36px;
-    height: 36px;
-    border: 3px solid var(--bg-tertiary);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+.check {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 3px 0 3px 13px;
+    cursor: pointer;
 }
 
-@keyframes spin {
-    to { transform: rotate(360deg); }
+.check input {
+    margin: 2px 0 0;
+    accent-color: var(--accent);
 }
 
-#progress-text {
-    font-size: 15px;
-    font-weight: 500;
-    color: var(--text-primary);
+/* ---------- Hot text (drag to change, click to type) ---------- */
+
+.hot {
+    color: var(--hot);
+    cursor: ew-resize;
+    justify-self: start;
+    border-bottom: 1px dotted transparent;
 }
 
-.progress-detail {
-    font-size: 12px;
-    color: var(--text-secondary);
+.hot:hover {
+    border-bottom-color: var(--hot);
 }
 
-/* ===== Modal ===== */
+/* Auto/Random — тоже можно тянуть, поэтому того же цвета, только тише */
+.hot.empty {
+    opacity: 0.7;
+}
+
+.hot-input {
+    width: 80px;
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 1px 4px;
+    color: var(--text-strong);
+    font: inherit;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* Режимно-зависимые элементы прячет ui.js через [hidden] */
+
+/* ---------- Footer: activity log ---------- */
+
+footer {
+    flex: none;
+    border-top: 1px solid var(--line);
+    padding: 2px 10px 4px;
+}
+
+.activity ol {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 4px 13px;
+    max-height: 110px;
+    overflow-y: auto;
+    font-size: 11px;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.activity li {
+    padding: 1px 0;
+    color: var(--text-dim);
+}
+
+.activity li time {
+    margin-right: 6px;
+    opacity: 0.7;
+}
+
+.activity li.error { color: var(--danger); }
+.activity li.success { color: var(--text); }
+
+#dev-tools {
+    padding: 4px 0;
+}
+
+/* ---------- Modal ---------- */
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.55);
+}
+
 .modal {
-    background: var(--bg-secondary);
-    border-radius: var(--radius-lg);
-    padding: 24px;
+    width: 100%;
     max-width: 300px;
-    text-align: center;
-    box-shadow: var(--shadow-lg);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 14px;
 }
 
-.modal h3 {
-    font-size: 17px;
+.modal h2 {
+    margin: 0 0 6px;
+    font-size: 13px;
     font-weight: 600;
-    margin-bottom: 12px;
+    color: var(--text-strong);
 }
 
 .modal p {
-    font-size: 13px;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-    line-height: 1.5;
+    margin: 0 0 14px;
+    color: var(--text);
 }
 
-.modal-buttons {
+.modal-actions {
     display: flex;
-    gap: 10px;
-    margin-top: 20px;
+    justify-content: flex-end;
+    gap: 6px;
 }
 
-.modal-buttons .btn {
-    flex: 1;
-}
+/* ---------- Scrollbars (Chromium) ---------- */
 
-/* ===== Utility ===== */
-.hidden {
-    display: none !important;
-}
-
-.ai-only.mode-hidden {
-    display: none !important;
-}
-
-/* ===== Scrollbar ===== */
 ::-webkit-scrollbar {
-    width: 6px;
-}
-
-::-webkit-scrollbar-track {
-    background: transparent;
+    width: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--bg-tertiary);
-    border-radius: 3px;
+    background: var(--line);
+    border-radius: 4px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-    background: var(--bg-elevated);
-}
-
-/* ===== Section Labels ===== */
-.section-title {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 4px;
+.hot.disabled {
+    opacity: 0.45;
+    cursor: default;
 }

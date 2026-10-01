@@ -32,6 +32,11 @@ const API = {
         }
     },
 
+    /** Есть ли у этой панели запрос /inpaint или /upscale в работе */
+    hasActiveRequest() {
+        return this._activeController !== null;
+    },
+
     /**
      * Прерывает текущий активный запрос /inpaint или /upscale, если есть.
      */

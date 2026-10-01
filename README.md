@@ -35,29 +35,37 @@ for watching server logs directly while developing).
 
 3. Pick a mode:
    - **Remove** — LaMa. Fast, no prompt, good for plain object removal.
-   - **AI Gen** — FLUX.2 [klein] 4B by default (4 steps; other engines in
-     `server/config.py`). Slower than Remove, supports a text prompt, best
-     for filling with something specific rather than just erasing, and for
-     expanding a layer into its transparent area.
-   - **Classic** — OpenCV Telea. Instant, no AI, best for small
-     defects/simple textures; no hallucinations but no real understanding
-     of content either.
+   - **Generate** — FLUX.2 [klein] 4B by default (4 steps; other engines in
+     `server/config.py`). Slower, takes an optional prompt — best for filling
+     with something specific, and for extending a layer into its transparent
+     area (select a layer with no mask).
+   - **Classic** — OpenCV Telea. Instant, no AI; good for small specks and
+     simple textures.
 
 4. Draw a mask on the selected layer (standard AE mask, `G` for the Pen
    tool). White/inside area = what gets inpainted. If the layer has several
    masks, the one currently selected in the AE timeline is used (Mask 1 if
-   none is selected).
+   none is selected). No mask on the layer at all? The layer's transparent
+   area is filled instead.
 
-   No mask on the layer at all? The layer's alpha channel is used instead
-   (transparent pixels = area to fill) — useful for extending/cleaning up
-   footage that already has transparency. A layer with neither a mask nor
-   an alpha channel returns an error.
+5. Click the action button (it is named after the mode: **Remove**,
+   **Generate** or **Fill**). Progress and the result show right under it;
+   **Stop** cancels between generation steps (nothing is imported after a
+   Stop). **Activity** at the bottom keeps a log of what happened.
 
-5. Click **Inpaint**. **Stop** cancels the in-flight request and asks the
-   server to abort generation between steps — the server may still finish
-   the step it was already on, but no layer gets imported after a cancel.
+**Options** (remembered between sessions; blue numbers — drag left/right to
+change, Shift for ×10, click to type, empty = Auto/Random):
+- *Mask expand* (default 3 px) — grows the mask so antialiased edges of the
+  object are covered too. *Feather* — soft blend outside the mask edge.
+- *Invert mask*, *Fill transparent areas under the mask*.
+- Generate only: *Steps*, *Guidance* (Auto = engine default), *Strength*,
+  *Seed*.
 
-Result appears as a new layer above the source, rendered at the
+**Upscale** tab: select layers, pick 2× / 4× and Art (anime model) or Photo,
+click **Upscale selected**. Each layer gets a copy above it with N× the
+pixels, scaled to 100/N % so the framing stays the same.
+
+The result appears as a new layer above the source, rendered at the
 composition's resolution with the source layer's position/anchor/scale/
 rotation baked in. It is **not** a live-linked layer — effects, track
 mattes, 3D, parenting and time-remapping on the source layer are not
@@ -83,16 +91,6 @@ carried over, and the new layer won't follow further edits to the source.
 - Older versions wrote `_AI_CACHE/` and `_AI_OUT/` next to the project.
   `_AI_CACHE` can be deleted; `_AI_OUT` holds results that older projects may
   still reference.
-
-## Settings
-
-Click **Settings** to adjust (AI Gen only, except where noted):
-- Strength (0.3-1.0)
-- Guidance (1-15)
-- Steps (10-50)
-- Seed (-1 = random)
-- Invert mask, Crop to mask, Fill transparent *(all modes)*
-- Mask feather/expand *(all modes)*
 
 ## Notes
 

@@ -43,8 +43,8 @@
 
                     <Geometry>
                         <Size>
-                            <Height>400</Height>
-                            <Width>280</Width>
+                            <Height>520</Height>
+                            <Width>300</Width>
                         </Size>
                         <MinSize>
                             <Height>300</Height>
