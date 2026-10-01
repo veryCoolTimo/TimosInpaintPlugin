@@ -1,7 +1,6 @@
 # Пины ниже — только верхние ГРАНИЦЫ (не точные версии): раньше почти всё
 # было задано через голое ">=", что для проекта с monkey-patch diffusers
-# internals (server/engines/flux_engine.py) и вендоренным форком BrushNet
-# (server/engines/powerpaint/) означает, что следующий крупный релиз любой
+# internals (server/engines/flux_engine.py) означает, что следующий крупный релиз любой
 # из этих библиотек может тихо сломать загрузку моделей.
 #
 # Это НЕ проверенные точные версии — после успешной установки и рабочего
@@ -14,32 +13,25 @@ fastapi>=0.109.0,<1.0
 uvicorn[standard]>=0.27.0,<1.0
 python-multipart>=0.0.6,<0.1
 
-# ML/AI (FLUX.1 Fill requires diffusers>=0.31.0 for GGUF support).
-# torch/torchvision are pinned EXACT rather than ranged — torchvision pins
-# an exact required torch version per release, so any independent range on
-# each risks pip's resolver either finding an unsatisfiable pair (hit this
-# for real with torch<2.6+torchvision<0.21 and again with torch<3.0) or
-# backtracking through dozens of candidate versions before giving up. This
-# specific pair is a verified-working, verified-available-for-macOS-arm64
-# combo — bump both together deliberately, not independently.
-torch==2.5.1
-torchvision==0.20.1
-diffusers>=0.31.0,<0.33
-transformers>=4.41.0,<5.0
-accelerate>=0.30.0,<1.1
-huggingface_hub>=0.23.0,<0.27
-safetensors>=0.4.0,<0.5
-gguf>=0.6.0,<0.11
+# ML/AI. FLUX.2 [klein] (Flux2KleinInpaintPipeline) появился в diffusers 0.38;
+# diffusers 0.40 требует torch>=2.6 и huggingface_hub>=1.23 (а с ним —
+# transformers 5.x). torch/torchvision закреплены парой: torchvision требует
+# точную версию torch.
+torch==2.8.0
+torchvision==0.23.0
+diffusers>=0.38.0,<0.41
+transformers>=5.0,<6.0
+accelerate>=1.0,<2.0
+huggingface_hub>=1.23,<2.0
+safetensors>=0.4.0,<1.0
+gguf>=0.6.0,<0.11          # только для ENGINE_TYPE="flux" (FLUX.1 Fill GGUF)
 sentencepiece>=0.2.0,<0.3
 
 # LaMa (object removal)
 simple-lama-inpainting>=0.1.2,<0.2
 
-# ControlNet (опционально — сейчас не используется ни одним движком,
-# DiffusersEngine.supports_controlnet всегда False; держим как задел)
-controlnet-aux>=0.0.7,<0.1
-
-# Real-ESRGAN Upscaler
+# Real-ESRGAN Upscaler. basicsr 1.4.2 импортирует удалённый в torchvision 0.17
+# модуль — upscale_engine подставляет алиас перед импортом
 basicsr>=1.4.2,<1.5
 realesrgan>=0.3.0,<0.4
 facexlib>=0.2.0,<0.4

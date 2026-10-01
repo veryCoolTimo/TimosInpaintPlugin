@@ -6,8 +6,11 @@ AI inpainting for After Effects. Remove objects and clean backgrounds.
 
 - macOS Apple Silicon (M1/M2/M3/M4) — this is the only platform tested; the
   server will run elsewhere but engines fall back to CPU and haven't been verified.
+- macOS 14 (Sonoma) or newer for AI Gen (FLUX.2 klein runs in bfloat16 on
+  the Apple GPU); 24 GB+ unified memory recommended (~16 GB of weights)
 - After Effects 2024+
-- Python 3.10+
+- Python 3.10 or 3.11 (`brew install python@3.11`; 3.12+ can't install
+  the Pillow version LaMa needs)
 
 ## Installation
 
@@ -16,7 +19,11 @@ AI inpainting for After Effects. Remove objects and clean backgrounds.
 ./scripts/install_extension.sh
 ```
 
-Restart After Effects. The panel starts the local server itself on first use —
+Restart After Effects.
+
+**Updating** an existing install: quit After Effects, `git pull`, then run
+`./scripts/install.sh` again — it reuses `.venv` and installs the versions
+from `server/requirements.lock.txt`. The panel starts the local server itself on first use —
 you don't need to run `start_server.sh` manually (that script is only useful
 for watching server logs directly while developing).
 
@@ -28,9 +35,10 @@ for watching server logs directly while developing).
 
 3. Pick a mode:
    - **Remove** — LaMa. Fast, no prompt, good for plain object removal.
-   - **AI Gen** — the configured diffusion engine (FLUX.1 Fill by default;
-     see `server/config.py`). Slower, supports a text prompt, best for
-     filling with something specific rather than just erasing.
+   - **AI Gen** — FLUX.2 [klein] 4B by default (4 steps; other engines in
+     `server/config.py`). Slower than Remove, supports a text prompt, best
+     for filling with something specific rather than just erasing, and for
+     expanding a layer into its transparent area.
    - **Classic** — OpenCV Telea. Instant, no AI, best for small
      defects/simple textures; no hallucinations but no real understanding
      of content either.
@@ -88,22 +96,17 @@ Click **Settings** to adjust (AI Gen only, except where noted):
 
 ## Notes
 
-- First run downloads the configured model — size varies a lot by engine
-  (LaMa is small and fast to fetch; FLUX.1 Fill and PowerPaint are several
-  GB each). Expect a long wait on first use of a given mode.
-- **AI Gen with the default FLUX engine needs a HuggingFace login once**,
-  separately from the download itself: `black-forest-labs/FLUX.1-Fill-dev`
-  is a gated repo. Before AI Gen mode will load:
-  1. Create a free account at https://huggingface.co if you don't have one.
-  2. Open https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev and
-     accept the license (button on that page).
-  3. Create an access token: https://huggingface.co/settings/tokens
-  4. Run `huggingface-cli login` (from the project's `.venv`) and paste
-     the token — or set `HF_TOKEN` in the environment before starting the server.
-
-  Without this, `/load` and the first AI Gen inpaint fail with an error
-  naming that repo — the GGUF transformer download itself works without a
-  token, it's specifically the base pipeline (VAE/text encoders) that's gated.
+- First run downloads the model for each mode: LaMa is small; AI Gen
+  (FLUX.2 klein 4B) is about 16 GB. Expect a long wait on first use.
+  klein is Apache 2.0 and not gated — no HuggingFace login needed.
+- The previous engine, FLUX.1 Fill (`ENGINE_TYPE = "flux"` in
+  `server/config.py`), still works but is slower (28 steps) and needs a
+  one-time HuggingFace login: accept the license at
+  https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev, create a token at
+  https://huggingface.co/settings/tokens and run `hf auth login`
+  from the project's `.venv` (or set `HF_TOKEN`).
+- To check AI Gen speed/memory on your Mac without After Effects:
+  `.venv/bin/python scripts/smoke_ai_engine.py` (see `--help`).
 - Typical inpaint time varies with mode, image size and engine; AI Gen with
   a diffusion model is meaningfully slower than Remove/Classic.
 - Add a prompt for better results — only used in **AI Gen** mode; Remove and
@@ -116,7 +119,3 @@ Click **Settings** to adjust (AI Gen only, except where noted):
 
 MIT
 
-Note: `server/engines/powerpaint/` vendors adapted code from
-[open-mmlab/PowerPaint](https://github.com/open-mmlab/PowerPaint) and
-[TencentARC/BrushNet](https://github.com/TencentARC/BrushNet) (Apache 2.0) —
-see `server/engines/powerpaint/NOTICE`.

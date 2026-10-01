@@ -89,17 +89,17 @@
                     <div class="setting">
                         <div class="setting-label">
                             <label>Guidance<span class="tooltip" tabindex="0" data-tip="How closely to follow prompt">?</span></label>
-                            <span class="value" id="guidance-value">7.5</span>
+                            <span class="value" id="guidance-value">Auto</span>
                         </div>
-                        <input type="range" id="guidance" min="1" max="15" step="0.5" value="7.5">
+                        <input type="range" id="guidance" min="1" max="30" step="0.5" value="7.5" data-auto="true">
                     </div>
 
                     <div class="setting">
                         <div class="setting-label">
                             <label>Steps<span class="tooltip" tabindex="0" data-tip="More = better quality, slower">?</span></label>
-                            <span class="value" id="steps-value">20</span>
+                            <span class="value" id="steps-value">Auto</span>
                         </div>
-                        <input type="range" id="steps" min="10" max="50" step="1" value="20">
+                        <input type="range" id="steps" min="1" max="50" step="1" value="20" data-auto="true">
                     </div>
 
                     <div class="setting">
@@ -226,7 +226,7 @@
     <div id="first-run-modal" class="overlay hidden">
         <div class="modal">
             <h3>First Run</h3>
-            <p>The AI model will be downloaded (size varies by mode — several GB up to ~10GB for AI Gen). This may take a while depending on your connection.</p>
+            <p>AI Gen uses FLUX.2 klein 4B: about 16 GB is downloaded once. This may take a while depending on your connection.</p>
             <div class="modal-buttons">
                 <button id="btn-first-run-cancel" class="btn btn-secondary">Cancel</button>
                 <button id="btn-first-run-continue" class="btn btn-primary">Continue</button>

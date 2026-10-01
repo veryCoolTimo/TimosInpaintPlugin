@@ -155,8 +155,9 @@ const API = {
             prompt: prompt || '',
             negative_prompt: settings.negativePrompt || '',
             strength: settings.strength || 1.0,
-            guidance_scale: settings.guidance || 7.5,
-            num_steps: settings.steps || 30,
+            // null — значения движка по умолчанию
+            guidance_scale: Number.isFinite(settings.guidance) ? settings.guidance : null,
+            num_steps: Number.isFinite(settings.steps) ? settings.steps : null,
             controlnet_scale: settings.controlnetScale || 0.5,
             // || превращал seed 0 в «случайный»
             seed: Number.isFinite(settings.seed) ? settings.seed : null,

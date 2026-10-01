@@ -239,7 +239,13 @@ function setupSlider(id) {
     const slider = document.getElementById(id);
     const span = document.getElementById(`${id}-value`);
     if (slider && span) {
-        slider.addEventListener('input', () => span.textContent = slider.value);
+        slider.addEventListener('input', () => {
+            // Слайдер с data-auto показывает "Auto", пока его не тронули:
+            // тогда сервер берёт значение движка (у klein 4 шага, у FLUX.1
+            // Fill 28/30) вместо одинакового для всех 20/7.5
+            delete slider.dataset.auto;
+            span.textContent = slider.value;
+        });
     }
 }
 
@@ -609,8 +615,8 @@ function getSettings() {
     const seed = parseInt(elements.seed.value);
     return {
         strength: parseFloat(elements.strength.value),
-        guidance: parseFloat(elements.guidance.value),
-        steps: parseInt(elements.steps.value),
+        guidance: elements.guidance.dataset.auto ? null : parseFloat(elements.guidance.value),
+        steps: elements.steps.dataset.auto ? null : parseInt(elements.steps.value),
         seed: seed === -1 ? null : seed,
         feather: parseInt(elements.feather.value),
         expand: parseInt(elements.expand.value),

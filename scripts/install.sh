@@ -24,21 +24,25 @@ elif [ "$(uname -m)" != "arm64" ]; then
     echo "It may still run under Rosetta or on Intel Macs, but this hasn't been tested."
 fi
 
-# Проверяем Python
-if ! command -v python3 &> /dev/null; then
-    echo "Error: Python 3 not found. Please install Python 3.10+"
+# Проверяем Python. Нужен 3.10 или 3.11: pillow 9.5 (его требует LaMa) есть
+# готовыми колёсами только до 3.11 — на 3.12+ (Homebrew ставит такой по
+# умолчанию) pip пытается собрать его из исходников и обычно падает.
+PYTHON=""
+for candidate in python3.11 python3.10 python3; do
+    if command -v "$candidate" &> /dev/null && \
+        "$candidate" -c 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 11) else 1)'; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    FOUND=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "none")
+    echo "Error: Python 3.10 or 3.11 required (found: $FOUND)."
+    echo "Install it with:  brew install python@3.11"
     exit 1
 fi
-
-PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-echo "Python version: $PYTHON_VERSION"
-
-# Раньше версия только печаталась — на Python 3.9 и ниже установка "успешно"
-# проходила и падала намного позже, непонятно где (в pip/torch).
-if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
-    echo "Error: Python 3.10+ required, found $PYTHON_VERSION"
-    exit 1
-fi
+echo "Python: $PYTHON ($("$PYTHON" --version))"
 
 # Создаём виртуальное окружение
 VENV_DIR="$PROJECT_DIR/.venv"
@@ -46,7 +50,7 @@ VENV_DIR="$PROJECT_DIR/.venv"
 if [ ! -d "$VENV_DIR" ]; then
     echo ""
     echo "Creating virtual environment..."
-    python3 -m venv "$VENV_DIR"
+    "$PYTHON" -m venv "$VENV_DIR"
 fi
 
 # Активируем venv

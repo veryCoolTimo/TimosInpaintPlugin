@@ -15,39 +15,6 @@ from .base import BaseEngine
 logger = logging.getLogger(__name__)
 
 
-def _patch_rope_for_mps():
-    """
-    Monkey-patch FLUX rope embedding to use float32 instead of float64.
-    MPS does not support float64 tensors — this prevents RuntimeError.
-
-    Idempotent: load()/unload()/load() cycles used to re-wrap
-    FluxPosEmbed.forward on every load(), growing the closure chain each
-    time (unload() never undid the patch). Guarded by an attribute on the
-    function itself so repeated calls are a no-op.
-    """
-    try:
-        from diffusers.models.embeddings import FluxPosEmbed
-    except (ImportError, AttributeError) as e:
-        logger.warning(f"Could not import FluxPosEmbed: {e}")
-        return
-
-    if getattr(FluxPosEmbed.forward, "_ae_mps_patched", False):
-        return
-
-    _orig_forward = FluxPosEmbed.forward
-
-    def _patched_forward(self, ids):
-        # Call original but ensure no float64 on MPS
-        result = _orig_forward(self, ids)
-        if result.dtype == torch.float64:
-            result = result.to(torch.float32)
-        return result
-
-    _patched_forward._ae_mps_patched = True
-    FluxPosEmbed.forward = _patched_forward
-    logger.info("Patched FluxPosEmbed.forward for MPS float32 compatibility")
-
-
 class FluxFillEngine(BaseEngine):
     """
     FLUX.1 Fill dev inpainting engine.
@@ -112,9 +79,8 @@ class FluxFillEngine(BaseEngine):
         # MPS requires fallback for unsupported ops
         os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
-        if self._device == "mps":
-            _patch_rope_for_mps()
-
+        # Патч rope под MPS больше не нужен: diffusers >= 0.38 сам переводит
+        # float64 в float32 на MPS (а на старом стеке патч ломал загрузку)
         # Step 1: Download GGUF file
         from huggingface_hub import hf_hub_download
 
@@ -192,22 +158,21 @@ class FluxFillEngine(BaseEngine):
         controlnet_scale: float = 0.5,
         seed: Optional[int] = None,
         step_callback=None,
-        task: str = "",
         **kwargs,
     ) -> Image.Image:
         """
         Run FLUX.1 Fill inpainting.
 
-        FLUX ignores: negative_prompt, strength, controlnet_scale, task.
+        FLUX ignores: negative_prompt, strength, controlnet_scale.
         guidance_scale and num_inference_steps use engine defaults if not overridden.
         """
         if self.pipe is None:
             raise RuntimeError("FLUX engine not loaded. Call load() first.")
 
         # Use engine defaults if caller passed zeros/defaults
-        if guidance_scale <= 0.1:
+        if guidance_scale is None or guidance_scale <= 0.1:
             guidance_scale = self.default_guidance_scale
-        if num_inference_steps <= 0:
+        if not num_inference_steps:
             num_inference_steps = self.default_num_inference_steps
 
         # Ensure dimensions are multiples of 32

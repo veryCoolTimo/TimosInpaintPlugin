@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 import config
-from engines import DiffusersEngine, LamaEngine, UpscaleEngine, PowerPaintEngine, FluxFillEngine
+from engines import DiffusersEngine, LamaEngine, UpscaleEngine, FluxFillEngine, Flux2KleinEngine
 from engines.opencv_engine import OpenCVEngine
 from engines.base import BaseEngine
 import pipeline
@@ -138,7 +138,13 @@ async def lifespan(app: FastAPI):
         watch_panels(float(os.environ.get("AE_INPAINT_WATCH_INTERVAL", "5")))
 
     # Инициализируем движки
-    if config.ENGINE_TYPE == "flux":
+    if config.ENGINE_TYPE == "klein":
+        ai_engine = Flux2KleinEngine(
+            model_id=config.KLEIN_MODEL,
+            default_guidance_scale=config.KLEIN_DEFAULT_GUIDANCE_SCALE,
+            default_num_inference_steps=config.KLEIN_DEFAULT_NUM_INFERENCE_STEPS,
+        )
+    elif config.ENGINE_TYPE == "flux":
         ai_engine = FluxFillEngine(
             gguf_repo=config.FLUX_GGUF_REPO,
             gguf_filename=config.FLUX_GGUF_FILENAME,
@@ -146,8 +152,6 @@ async def lifespan(app: FastAPI):
             default_guidance_scale=config.FLUX_DEFAULT_GUIDANCE_SCALE,
             default_num_inference_steps=config.FLUX_DEFAULT_NUM_INFERENCE_STEPS,
         )
-    elif config.ENGINE_TYPE == "powerpaint":
-        ai_engine = PowerPaintEngine(model_id=config.POWERPAINT_MODEL)
     elif config.ENGINE_TYPE == "diffusers":
         ai_engine = DiffusersEngine(
             model_id=config.SDXL_INPAINT_MODEL,
@@ -156,7 +160,7 @@ async def lifespan(app: FastAPI):
     else:
         raise RuntimeError(
             f"Unknown ENGINE_TYPE={config.ENGINE_TYPE!r} in config.py. "
-            f"Expected 'flux', 'powerpaint' or 'diffusers'."
+            f"Expected 'klein', 'flux' or 'diffusers'."
         )
 
     lama_engine = LamaEngine()
@@ -210,12 +214,13 @@ class InpaintRequest(BaseModel):
     """Запрос на инпейнтинг"""
     image: str = Field(..., description="Base64 PNG изображения")
     mask: str = Field(default="", description="Base64 PNG маски (белый = inpaint). Пусто = авто из альфа")
-    mode: Literal["remove", "ai", "clean"] = Field(default="remove", description="Режим: 'remove' (LaMa), 'ai' (SD/FLUX/PowerPaint), 'clean' (OpenCV)")
+    mode: Literal["remove", "ai", "clean"] = Field(default="remove", description="Режим: 'remove' (LaMa), 'ai' (ENGINE_TYPE из config), 'clean' (OpenCV)")
     prompt: str = Field(default="", description="Текстовый промпт")
     negative_prompt: str = Field(default="", description="Негативный промпт")
-    strength: float = Field(default=1.0, ge=0.0, le=1.0)
-    guidance_scale: float = Field(default=7.5, ge=1.0, le=50.0)
-    num_steps: int = Field(default=20, ge=10, le=100)
+    strength: float = Field(default=1.0, gt=0.0, le=1.0)
+    # None — значения по умолчанию движка (у klein 4 шага, у FLUX.1 Fill 28)
+    guidance_scale: Optional[float] = Field(default=None, ge=0.0, le=50.0)
+    num_steps: Optional[int] = Field(default=None, ge=1, le=100)
     controlnet_scale: float = Field(default=0.5, ge=0.0, le=1.0)
     seed: Optional[int] = Field(default=None)
     feather: int = Field(default=0, ge=0, le=50, description="Feather маски в px")
@@ -263,13 +268,13 @@ class HealthResponse(BaseModel):
 def is_model_cached() -> bool:
     """Проверяет есть ли модель в кэше HuggingFace"""
     cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    if config.ENGINE_TYPE == "klein":
+        return (cache_dir / f"models--{config.KLEIN_MODEL.replace('/', '--')}").exists()
     if config.ENGINE_TYPE == "flux":
         # Check both GGUF file and base model
         gguf_name = config.FLUX_GGUF_REPO.replace("/", "--")
         base_name = config.FLUX_BASE_MODEL.replace("/", "--")
         return (cache_dir / f"models--{gguf_name}").exists() and (cache_dir / f"models--{base_name}").exists()
-    elif config.ENGINE_TYPE == "powerpaint":
-        model_name = config.POWERPAINT_MODEL.replace("/", "--")
     else:
         model_name = config.SDXL_INPAINT_MODEL.replace("/", "--")
     model_dir = cache_dir / f"models--{model_name}"
@@ -292,7 +297,7 @@ async def cancel_job():
     """Отменяет текущую активную job (Stop в панели).
 
     Best-effort: выставляет cancel_event, который проверяется между шагами
-    инференса в step_callback. Диффузионные движки (FLUX/PowerPaint/SD)
+    инференса в step_callback. Диффузионные движки (klein/FLUX/SD)
     остановятся на следующем шаге; LaMa/OpenCV успевают завершиться раньше,
     чем клиент вообще пришлёт /cancel, потому что работают за 1-3 секунды.
     """
@@ -441,14 +446,15 @@ async def inpaint(request: InpaintRequest):
             f"(padded {prepared.model_image.size}), expand_mode={prepared.expand_mode}"
         )
 
+        # Не задано — берём значения движка. Раньше для FLUX работал хак
+        # "прислали ровно 7.5/20 (дефолты UI) — подставить свои", и любое
+        # другое значение слайдера уходило в FLUX как есть (guidance 8 вместо 30)
         effective_guidance = request.guidance_scale
+        if effective_guidance is None:
+            effective_guidance = getattr(engine, "default_guidance_scale", config.DEFAULT_GUIDANCE_SCALE)
         effective_steps = request.num_steps
-        if isinstance(engine, FluxFillEngine):
-            # If user sent SD defaults (7.5 / 20), override with FLUX defaults
-            if abs(request.guidance_scale - 7.5) < 0.01:
-                effective_guidance = config.FLUX_DEFAULT_GUIDANCE_SCALE
-            if request.num_steps == 20:
-                effective_steps = config.FLUX_DEFAULT_NUM_INFERENCE_STEPS
+        if effective_steps is None:
+            effective_steps = getattr(engine, "default_num_inference_steps", config.DEFAULT_NUM_INFERENCE_STEPS)
 
         # Combine user's negative prompt with default for stronger effect (not used by FLUX)
         if request.negative_prompt and request.negative_prompt != config.DEFAULT_NEGATIVE_PROMPT:
@@ -485,15 +491,6 @@ async def inpaint(request: InpaintRequest):
             seed=request.seed,
             step_callback=on_step if mode == "ai" else None,
         )
-
-        # PowerPaint: без промпта — object_removal (заполнить контекстом), с
-        # промптом — text_guided (раньше промпт молча игнорировался), для
-        # expand — image_outpainting
-        if mode == "ai" and isinstance(engine, PowerPaintEngine):
-            if prepared.expand_mode:
-                inpaint_kwargs["task"] = "image_outpainting"
-            else:
-                inpaint_kwargs["task"] = "text_guided" if request.prompt.strip() else "object_removal"
 
         # Инференс — в threadpool, чтобы event loop оставался живым:
         # /progress и /cancel продолжают отвечать во время генерации, и

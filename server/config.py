@@ -8,13 +8,20 @@ from typing import Literal
 HOST = "127.0.0.1"
 PORT = 7860
 
-# Движок инпейнтинга.
-# "comfyui" сознательно не входит в список — ветки реализации для него нет,
-# выбор недопустимого значения должен падать явной ошибкой при старте, а не
-# тихо откатываться на diffusers.
-ENGINE_TYPE: Literal["flux", "powerpaint", "diffusers"] = "flux"
+# Движок режима AI Gen.
+# "klein" — FLUX.2 [klein] 4B (по умолчанию): 4 шага, Apache 2.0, без
+#           HuggingFace-логина, ~16 ГБ весов.
+# "flux"  — FLUX.1 Fill dev GGUF (прежний движок): 28 шагов, gated-репо,
+#           нужен `hf auth login`.
+# "diffusers" — SD 1.5 / SDXL inpaint, 512–1024 px.
+ENGINE_TYPE: Literal["klein", "flux", "diffusers"] = "klein"
 
-# Модели — FLUX.1 Fill dev (default)
+# FLUX.2 [klein] 4B (дистиллированная: 4 шага, guidance выключен)
+KLEIN_MODEL = "black-forest-labs/FLUX.2-klein-4B"
+KLEIN_DEFAULT_GUIDANCE_SCALE = 1.0
+KLEIN_DEFAULT_NUM_INFERENCE_STEPS = 4
+
+# FLUX.1 Fill dev (ENGINE_TYPE = "flux")
 FLUX_GGUF_REPO = "YarvixPA/FLUX.1-Fill-dev-gguf"
 # Было "flux1-fill-dev-Q5_K_M.gguf" — этого файла в репозитории нет и,
 # похоже, никогда не было под этим именем (проверено через HF API): доступны
@@ -27,10 +34,7 @@ FLUX_BASE_MODEL = "black-forest-labs/FLUX.1-Fill-dev"
 FLUX_DEFAULT_GUIDANCE_SCALE = 30.0
 FLUX_DEFAULT_NUM_INFERENCE_STEPS = 28
 
-# PowerPaint v2 — BrushNet-based, 73% human preference for object removal
-POWERPAINT_MODEL = "JunhaoZhuang/PowerPaint_v2"
-
-# Legacy SD models (not used when ENGINE_TYPE = "powerpaint")
+# SD / SDXL inpaint (ENGINE_TYPE = "diffusers")
 SDXL_INPAINT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 CONTROLNET_MODEL = ""
 

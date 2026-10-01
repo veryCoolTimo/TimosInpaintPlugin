@@ -21,7 +21,8 @@ class BaseEngine(ABC):
     # main.py уменьшает до этого размера, а результат растягивает обратно
     # только внутри маски — пиксели вне маски всегда остаются оригинальными.
     max_resolution: Optional[int] = None
-    # Размеры входа должны делиться на это число (8 для SD/LaMa, 32 для FLUX)
+    # Размеры входа должны делиться на это число (8 для SD/LaMa, 16 для
+    # FLUX.2 klein, 32 для FLUX.1 Fill)
     size_divisor: int = 8
 
     @abstractmethod
@@ -52,7 +53,6 @@ class BaseEngine(ABC):
         controlnet_scale: float = 0.5,
         seed: Optional[int] = None,
         step_callback: Optional[Callable[[int, int], None]] = None,
-        task: str = "",
         **kwargs,
     ) -> Image.Image:
         """
@@ -71,8 +71,6 @@ class BaseEngine(ABC):
             step_callback: вызывается как step_callback(step, total) между
                 шагами денойзинга (используется для прогресса и отмены).
                 Игнорируется движками без пошагового инференса (LaMa, OpenCV).
-            task: task-промпт для движков, которые его поддерживают (PowerPaint).
-                Игнорируется остальными.
             **kwargs: место для параметров, специфичных для конкретного
                 движка, чтобы вызывающий код (main.py) мог передавать их
                 единообразно всем движкам, не проверяя тип каждый раз.
