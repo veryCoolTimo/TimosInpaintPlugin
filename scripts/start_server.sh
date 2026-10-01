@@ -17,9 +17,6 @@ if [ ! -d "$VENV_DIR" ]; then
     exit 1
 fi
 
-# Активируем venv
-source "$VENV_DIR/bin/activate"
-
 # Переходим в папку сервера
 cd "$SERVER_DIR"
 
@@ -30,4 +27,4 @@ echo ""
 # Без --reload: это dev-удобство (файловый watcher + отдельный процесс
 # перезапуска), а не что-то нужное конечному пользователю — и оно плохо
 # сочетается с тяжёлой загрузкой ML-моделей в памяти.
-python -m uvicorn main:app --host 127.0.0.1 --port 7860
+"$VENV_DIR/bin/python" -m uvicorn main:app --host 127.0.0.1 --port 7860

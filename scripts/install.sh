@@ -53,25 +53,31 @@ if [ ! -d "$VENV_DIR" ]; then
     "$PYTHON" -m venv "$VENV_DIR"
 fi
 
-# Активируем venv
-source "$VENV_DIR/bin/activate"
+# pip вызываем через python окружения, а не через activate + `pip`: если
+# папку проекта переносили, activate и обёртки в .venv/bin указывают на
+# старый путь и `pip` "не находится", хотя само окружение рабочее
+VENV_PY="$VENV_DIR/bin/python"
+if ! "$VENV_PY" -c 'import sys' 2>/dev/null; then
+    echo "Error: $VENV_DIR is broken. Delete it and run this script again."
+    exit 1
+fi
+"$VENV_PY" -m pip --version > /dev/null 2>&1 || "$VENV_PY" -m ensurepip --upgrade
 
-# Обновляем pip
 echo ""
 echo "Upgrading pip..."
-pip install --upgrade pip
+"$VENV_PY" -m pip install --upgrade pip
 
 # Устанавливаем зависимости.
-# requirements.lock.txt (если есть) — точные версии, verified working на
-# Apple Silicon; requirements.txt — диапазоны на случай если lock-файл
-# устарел или у тебя другая архитектура/Python. См. server/requirements.lock.txt.
+# requirements.lock.txt (если есть) — точные версии для Apple Silicon;
+# requirements.txt — диапазоны на случай если lock-файл устарел или у тебя
+# другая архитектура/Python. См. server/requirements.lock.txt.
 echo ""
 if [ -f "$SERVER_DIR/requirements.lock.txt" ]; then
     echo "Installing dependencies (from requirements.lock.txt, verified versions)..."
-    pip install -r "$SERVER_DIR/requirements.lock.txt"
+    "$VENV_PY" -m pip install -r "$SERVER_DIR/requirements.lock.txt"
 else
     echo "Installing dependencies (from requirements.txt, ranged — no lock file found)..."
-    pip install -r "$SERVER_DIR/requirements.txt"
+    "$VENV_PY" -m pip install -r "$SERVER_DIR/requirements.txt"
 fi
 
 # Создаём папку для моделей — server/models, а не корневой models/. Раньше
