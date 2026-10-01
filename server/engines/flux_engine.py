@@ -57,6 +57,9 @@ class FluxFillEngine(BaseEngine):
     No negative prompts, no task tokens.
     """
 
+    max_resolution = 1024
+    size_divisor = 32
+
     def __init__(
         self,
         gguf_repo: str = "YarvixPA/FLUX.1-Fill-dev-gguf",

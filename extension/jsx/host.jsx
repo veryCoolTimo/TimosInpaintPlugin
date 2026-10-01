@@ -288,7 +288,9 @@ AEI.renderLayerSolo = function(layerIndex, outputPath) {
 
 // Import PNG as new layer
 // sourceLayerIndexOrName can be a number (index) or string (name)
-AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName) {
+// scalePercent: optional layer scale; upscale results are N× the comp size,
+// so they're imported at 100/N % to keep the same framing at higher res.
+AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName, scalePercent) {
     var comp = app.project.activeItem;
 
     if (!comp || !(comp instanceof CompItem)) {
@@ -330,6 +332,10 @@ AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName) {
         newLayer.startTime = sourceLayer.startTime;
         newLayer.inPoint = sourceLayer.inPoint;
         newLayer.outPoint = sourceLayer.outPoint;
+
+        if (scalePercent && scalePercent !== 100) {
+            newLayer.scale.setValue([scalePercent, scalePercent]);
+        }
 
         // Result PNG is already rendered at comp dimensions with correct positioning
         // (renderLayerSolo bakes layer transform into the comp-sized output).
@@ -516,7 +522,7 @@ function getSelectedLayer() { return $.global.AEInpaint.getSelectedLayer(); }
 function getSelectedLayers() { return $.global.AEInpaint.getSelectedLayers(); }
 function renderLayerMask(a,b,c) { return $.global.AEInpaint.renderLayerMask(a,b,c); }
 function renderLayerSolo(a,b) { return $.global.AEInpaint.renderLayerSolo(a,b); }
-function importResultAsLayer(a,b,c) { return $.global.AEInpaint.importResultAsLayer(a,b,c); }
+function importResultAsLayer(a,b,c,d) { return $.global.AEInpaint.importResultAsLayer(a,b,c,d); }
 function exportForInpaint(a,b,c) { return $.global.AEInpaint.exportForInpaint(a,b,c); }
 function exportLayerFrame(a,b) { return $.global.AEInpaint.exportLayerFrame(a,b); }
 function testJSXLoaded() { return $.global.AEInpaint.testJSXLoaded(); }

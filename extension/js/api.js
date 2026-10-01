@@ -108,9 +108,8 @@ const API = {
      * @param {string} params.mode - Режим: 'ai' или 'clean'
      * @param {string} params.prompt - Текстовый промпт
      * @param {Object} params.settings - Настройки (strength, guidance, etc.)
-     * @param {string} params.cacheDir - Путь к папке кэша
      */
-    async inpaint({ imageBase64, maskBase64, mode, prompt, settings, cacheDir }) {
+    async inpaint({ imageBase64, maskBase64, mode, prompt, settings }) {
         const body = {
             image: imageBase64,
             mask: maskBase64,
@@ -127,8 +126,7 @@ const API = {
             crop_to_mask: settings.cropToMask !== false,  // default true
             crop_padding: 128,
             invert_mask: settings.invertMask || false,
-            fill_transparent: settings.fillTransparent || false,
-            cache_dir: cacheDir || null
+            fill_transparent: settings.fillTransparent || false
         };
 
         const controller = new AbortController();
@@ -166,20 +164,6 @@ const API = {
         } finally {
             if (this._activeController === controller) this._activeController = null;
         }
-    },
-
-    /**
-     * Очистка кэша
-     */
-    async clearCache(cacheDir) {
-        const response = await fetch(`${this.baseUrl}/clear-cache?cache_dir=${encodeURIComponent(cacheDir)}`, {
-            method: 'POST'
-        });
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Failed to clear cache');
-        }
-        return await response.json();
     },
 
     /**

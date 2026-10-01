@@ -32,6 +32,8 @@ class PowerPaintEngine(BaseEngine):
     - text_guided: генерация по промпту
     """
 
+    max_resolution = 512
+
     def __init__(
         self,
         model_id: str = "JunhaoZhuang/PowerPaint_v2",
@@ -303,12 +305,13 @@ class PowerPaintEngine(BaseEngine):
         # For object_removal/context_aware: use ONLY the task token, no user text.
         # PowerPaint's P_ctxt token alone tells the model to fill with surrounding context.
         # Adding user text with P_ctxt breaks the removal behavior.
-        if task in ("object_removal", "context_aware", "image_outpainting"):
+        if task in ("object_removal", "context_aware"):
             promptA = task_token
             promptB = task_token
             unet_prompt = ""
         else:
-            # text_guided: include user prompt with task token
+            # text_guided / image_outpainting: include user prompt with task
+            # token (outpainting = prompt + P_ctxt, как в официальном PowerPaint)
             user_prompt = prompt or ""
             promptA = f"{user_prompt} {task_token}".strip()
             promptB = f"{user_prompt} {task_token}".strip()

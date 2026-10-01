@@ -57,7 +57,6 @@ function init() {
     elements.btnStop = document.getElementById('btn-stop');
     elements.btnToggleSettings = document.getElementById('btn-toggle-settings');
     elements.btnDebug = document.getElementById('btn-debug');
-    elements.btnClearCache = document.getElementById('btn-clear-cache');
     elements.btnDebugMode = document.getElementById('btn-debug-mode');
     elements.settingsPanel = document.getElementById('settings-panel');
     elements.devTools = document.getElementById('dev-tools');
@@ -121,7 +120,6 @@ function init() {
     elements.btnStop.addEventListener('click', handleStop);
     elements.btnToggleSettings.addEventListener('click', handleToggleSettings);
     elements.btnDebug.addEventListener('click', handleDebugExport);
-    elements.btnClearCache.addEventListener('click', handleClearCache);
     elements.btnDebugMode.addEventListener('click', handleToggleDebugMode);
     elements.btnFirstRunCancel.addEventListener('click', hideFirstRunModal);
     elements.btnFirstRunContinue.addEventListener('click', handleFirstRunContinue);
@@ -651,8 +649,6 @@ async function handleInpaint() {
                         if (total > 0) {
                             updateProgress(`Generating... ${step}/${total}`, `Step ${step} of ${total}`);
                         }
-                    } else if (prog.stage === 'upscaling') {
-                        updateProgress('Upscaling...', 'Enhancing quality');
                     }
                 } catch (e) {}
             }, 500);
@@ -669,19 +665,18 @@ async function handleInpaint() {
                 maskBase64,
                 mode: mode,
                 prompt: elements.prompt.value.trim(),
-                settings: settings,
-                cacheDir: projectInfo.projectPath
+                settings: settings
             });
         } finally {
             if (progressInterval) clearInterval(progressInterval);
         }
 
         // Mark model as downloaded after successful AI inference
-        if (mode === 'ai' && !result.cached) {
+        if (mode === 'ai') {
             markModelDownloaded();
         }
 
-        log(result.cached ? 'Using cached result' : 'Done', 'success');
+        log('Done', 'success');
 
         // 6. Save result
         showProgress('Importing...', 'Saving result file');
@@ -747,17 +742,6 @@ async function handleDebugExport() {
         if (exportResult.error) throw new Error(exportResult.error);
 
         log('Exported to _AI_CACHE folder', 'success');
-    } catch (error) {
-        log(error.message, 'error');
-    }
-}
-
-async function handleClearCache() {
-    try {
-        const projectInfo = await evalScript('getProjectInfo()');
-        if (projectInfo.error) throw new Error(projectInfo.error);
-        await API.clearCache(projectInfo.projectPath);
-        log('Cache cleared', 'success');
     } catch (error) {
         log(error.message, 'error');
     }
@@ -899,7 +883,7 @@ async function handleUpscale() {
             // Import - use the INDEX from export result (current position)
             showProgress(`${num}/${layers.length}`, `Importing...`);
             const importResult = await evalScript(
-                `importResultAsLayer(${jsxStr(resultPath.replace(/\\/g, '/'))}, ${exportResult.layerIndex}, ${jsxStr(layer.name + ' x' + settings.scale)})`
+                `importResultAsLayer(${jsxStr(resultPath.replace(/\\/g, '/'))}, ${exportResult.layerIndex}, ${jsxStr(layer.name + ' x' + settings.scale)}, ${100 / settings.scale})`
             );
             if (importResult.error) {
                 log(`Import error: ${importResult.error}`, 'error');

@@ -27,6 +27,7 @@ class DiffusersEngine(BaseEngine):
         self.model_id = model_id
         self.controlnet_id = controlnet_id
         self.is_sdxl = "xl" in model_id.lower()
+        self.max_resolution = 1024 if self.is_sdxl else 512
 
         # Определяем устройство
         if device:

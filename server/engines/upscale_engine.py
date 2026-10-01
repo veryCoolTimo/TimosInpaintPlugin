@@ -171,19 +171,21 @@ class UpscaleEngine:
         if not self.is_loaded() or self.current_model != model_type:
             self.load(model_type)
 
-        # Конвертируем PIL в numpy (BGR для OpenCV).
-        # Раньше grayscale-вход (2D массив, нет image.shape[2]) падал с
-        # IndexError — приводим explicitly к RGB/RGBA сначала.
+        # Альфу апскейлим отдельно простым LANCZOS: раньше RGBA приводился к
+        # BGR и прозрачный фон становился чёрным. Второй прогон ESRGAN по
+        # альфе (как делает RealESRGANer для 4-канальных) удвоил бы время.
         import cv2
-        if image.mode not in ("RGB", "RGBA"):
-            image = image.convert("RGB")
-        img_np = np.array(image)
-        if img_np.ndim == 2:  # на всякий случай, если convert выше не сработал
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_GRAY2BGR)
-        elif img_np.shape[2] == 4:  # RGBA
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
-        else:  # RGB
-            img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        if image.mode in ("LA", "PA") or "transparency" in image.info:
+            image = image.convert("RGBA")
+        alpha = image.getchannel("A") if image.mode == "RGBA" else None
+        rgb = np.array(image.convert("RGB"))
+        if alpha is not None:
+            # AE пишет прозрачные пиксели как чёрные — ESRGAN размазал бы их
+            # в тёмную кайму по краю. Заливаем средним цветом непрозрачных.
+            opaque = np.array(alpha) > 128
+            if np.any(opaque):
+                rgb[~opaque] = rgb[opaque].mean(axis=0).astype(np.uint8)
+        img_np = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
         logger.info(f"Upscaling: {image.size} x{scale} with {model_type} model")
 
@@ -191,9 +193,10 @@ class UpscaleEngine:
         # Real-ESRGAN всегда делает x4, для x2 нужно потом уменьшить
         output, _ = self.upsampler.enhance(img_np, outscale=scale)
 
-        # Конвертируем обратно в PIL (RGB)
-        output_rgb = cv2.cvtColor(output, cv2.COLOR_BGR2RGB)
-        result = Image.fromarray(output_rgb)
+        # Конвертируем обратно в PIL
+        result = Image.fromarray(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+        if alpha is not None:
+            result.putalpha(alpha.resize(result.size, Image.Resampling.LANCZOS))
 
         logger.info(f"Upscale completed: {result.size}")
 

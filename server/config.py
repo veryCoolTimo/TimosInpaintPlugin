@@ -52,11 +52,6 @@ DEFAULT_NEGATIVE_PROMPT = (
 # Пути
 BASE_DIR = Path(__file__).parent.parent
 MODELS_DIR = BASE_DIR / "models"
-CACHE_DIR_NAME = "_AI_CACHE"
-OUTPUT_DIR_NAME = "_AI_OUT"
-
-# Кэш
-CACHE_ENABLED = False
 
 # Логирование
 LOG_LEVEL = "INFO"

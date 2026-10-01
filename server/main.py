@@ -12,23 +12,14 @@ from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
 import config
 from engines import DiffusersEngine, LamaEngine, UpscaleEngine, PowerPaintEngine, FluxFillEngine
 from engines.opencv_engine import OpenCVEngine
 from engines.base import BaseEngine
-from utils import base64_to_image, image_to_base64, CacheManager
-from utils.image import (
-    ensure_rgb,
-    ensure_mask_format,
-    resize_for_model,
-    apply_mask_feather,
-    expand_mask,
-    crop_to_mask,
-    paste_back,
-)
+import pipeline
+from utils import base64_to_image, image_to_base64
 
 
 class JobCancelled(Exception):
@@ -51,13 +42,12 @@ ai_engine: Optional[BaseEngine] = None
 lama_engine: Optional[LamaEngine] = None
 opencv_engine: Optional[OpenCVEngine] = None
 upscale_engine: Optional[UpscaleEngine] = None
-cache_manager: Optional[CacheManager] = None
 
 # Progress tracking
 progress_info = {
     "step": 0,
     "total_steps": 0,
-    "stage": "idle",  # idle, loading, inpainting, upscaling, done
+    "stage": "idle",  # idle, loading_model, inpainting, done, error, cancelled
 }
 
 # Единая блокировка вокруг load/infer/unload — сервер локальный,
@@ -79,7 +69,7 @@ current_job = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle: загрузка/выгрузка модели"""
-    global ai_engine, lama_engine, opencv_engine, upscale_engine, cache_manager
+    global ai_engine, lama_engine, opencv_engine, upscale_engine
 
     logger.info("Starting server...")
 
@@ -170,13 +160,11 @@ class InpaintRequest(BaseModel):
     crop_padding: int = Field(default=128, ge=16, le=512, description="Отступ при обрезке по маске")
     invert_mask: bool = Field(default=False, description="Инвертировать маску")
     fill_transparent: bool = Field(default=False, description="Заполнить прозрачные области под маской")
-    cache_dir: Optional[str] = Field(default=None, description="Путь к папке кэша проекта")
 
 
 class InpaintResponse(BaseModel):
     """Ответ с результатом инпейнтинга"""
     result: str = Field(..., description="Base64 PNG результата")
-    cached: bool = Field(default=False, description="Результат из кэша")
     width: int
     height: int
 
@@ -302,7 +290,7 @@ async def unload_model():
 @app.post("/inpaint", response_model=InpaintResponse)
 async def inpaint(request: InpaintRequest):
     """Выполняет инпейнтинг"""
-    global cache_manager, progress_info
+    global progress_info
 
     if current_job["active"]:
         raise HTTPException(status_code=409, detail="Server is busy with another job. Stop it first or wait.")
@@ -339,101 +327,39 @@ async def inpaint(request: InpaintRequest):
                 logger.error(f"Failed to auto-load model: {e}")
                 raise HTTPException(status_code=500, detail=f"Failed to load model: {e}")
 
-        # Debug: log received data sizes
-        logger.info(f"Received image base64 length: {len(request.image)}")
-        logger.info(f"Received mask base64 length: {len(request.mask)}")
+        try:
+            image = await run_in_threadpool(base64_to_image, request.image)
+            mask = await run_in_threadpool(base64_to_image, request.mask) if request.mask else None
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Can't decode image/mask: {e}")
+        logger.info(f"Decoded image: {image.mode} {image.size}, mask: {mask.size if mask else 'from alpha'}")
 
-        # Декодируем изображения
-        image = base64_to_image(request.image)
-        logger.info(f"Decoded image: {image.mode} {image.size}")
+        try:
+            prepared = await run_in_threadpool(
+                lambda: pipeline.prepare(
+                    image,
+                    mask,
+                    max_resolution=engine.max_resolution,
+                    size_divisor=engine.size_divisor,
+                    invert_mask=request.invert_mask,
+                    expand_px=request.expand,
+                    feather_px=request.feather,
+                    crop=request.crop_to_mask,
+                    crop_padding=request.crop_padding,
+                    fill_transparent=request.fill_transparent,
+                )
+            )
+        except pipeline.InputError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
-        if config.DEBUG_SAVE_INTERMEDIATE:
-            image.save("/tmp/ae_debug_raw_image.png")
+        logger.info(
+            f"Prepared: crop={prepared.bbox} {prepared.cropped_size} -> model {prepared.model_size} "
+            f"(padded {prepared.model_image.size}), expand_mode={prepared.expand_mode}"
+        )
 
-        if request.mask:
-            mask = base64_to_image(request.mask)
-            logger.info(f"Decoded mask: {mask.mode} {mask.size}")
-            if config.DEBUG_SAVE_INTERMEDIATE:
-                mask.save("/tmp/ae_debug_raw_mask.png")
-        else:
-            # No mask provided - generate from alpha channel (expand mode)
-            logger.info("No mask provided, generating from alpha channel")
-            import numpy as np
-            if image.mode == 'RGBA':
-                alpha = np.array(image.split()[3])
-                # White where transparent (alpha=0), black where opaque
-                mask_array = np.where(alpha < 128, 255, 0).astype(np.uint8)
-                mask = Image.fromarray(mask_array, 'L')
-                logger.info(f"Generated alpha mask: {mask.size}, white pixels: {np.sum(mask_array > 128)}")
-            else:
-                # No alpha channel - can't generate mask
-                raise HTTPException(status_code=400, detail="No mask provided and image has no alpha channel")
-
-        # Сохраняем альфа-канал для восстановления прозрачного фона
-        original_alpha = image.split()[3] if image.mode == "RGBA" else None
-        if original_alpha:
-            logger.info("Saved alpha channel for later restoration")
-            # Заполняем прозрачные пиксели средним цветом непрозрачных,
-            # чтобы модель не видела белый фон и не генерировала поверх
-            import numpy as np
-            img_arr = np.array(image)
-            alpha_arr = img_arr[:, :, 3]
-            opaque = alpha_arr > 128
-            if np.any(opaque):
-                avg_color = img_arr[opaque][:, :3].mean(axis=0).astype(np.uint8)
-            else:
-                avg_color = np.array([128, 128, 128], dtype=np.uint8)
-            img_arr[~opaque, :3] = avg_color
-            img_arr[~opaque, 3] = 255  # Make fully opaque so ensure_rgb won't composite onto white
-            image = Image.fromarray(img_arr)
-            logger.info(f"Filled transparent pixels with avg color: {avg_color.tolist()}")
-
-        # Подготавливаем изображения
-        image = ensure_rgb(image)
-        mask = ensure_mask_format(mask, invert=request.invert_mask)
-        logger.info(f"Mask inverted: {request.invert_mask}")
-
-        # Применяем feather/expand к маске
-        if request.feather > 0:
-            mask = apply_mask_feather(mask, request.feather)
-        if request.expand > 0:
-            mask = expand_mask(mask, request.expand)
-
-        # Сохраняем оригиналы для paste_back
-        original_image = image.copy()
-        original_mask = mask.copy()
-        original_size = image.size
-        crop_bbox = None
-
-        # Обрезаем по маске для ускорения (LaMa и SD)
-        use_ai = mode in ("ai", "remove")
-        # Было isinstance(ai_engine, ...) — проверяло глобальный AI-движок,
-        # а не выбранный для этого запроса engine. При ENGINE_TYPE=flux и
-        # mode=remove (LaMa) divisor ошибочно брался как для FLUX (32 вместо 8).
-        crop_divisor = 32 if (isinstance(engine, FluxFillEngine) and mode == "ai") else 8
-        if request.crop_to_mask and use_ai:
-            image, mask, crop_bbox = crop_to_mask(image, mask, padding=request.crop_padding, divisor=crop_divisor)
-            if crop_bbox:
-                logger.info(f"Cropped to mask: {original_size} -> {image.size} (bbox: {crop_bbox})")
-
-        # Ресайз для моделей
-        cropped_size = image.size
-        if use_ai:
-            is_flux = isinstance(engine, FluxFillEngine)
-            max_model_size = 1024 if is_flux else 512
-            divisor = 32 if is_flux else 8
-            image = resize_for_model(image, max_size=max_model_size, divisor=divisor)
-            mask = mask.resize(image.size, Image.Resampling.LANCZOS)
-            logger.info(f"Resized for model: {cropped_size} -> {image.size}")
-
-        # Resolve guidance_scale/steps ДО построения ключа кэша — иначе кэш
-        # ключуется по тому, что прислал клиент, а не по тому, что реально
-        # ушло в модель после FLUX-переопределений (см. ниже).
         effective_guidance = request.guidance_scale
         effective_steps = request.num_steps
-        is_flux_engine = isinstance(engine, FluxFillEngine)
-
-        if is_flux_engine:
+        if isinstance(engine, FluxFillEngine):
             # If user sent SD defaults (7.5 / 20), override with FLUX defaults
             if abs(request.guidance_scale - 7.5) < 0.01:
                 effective_guidance = config.FLUX_DEFAULT_GUIDANCE_SCALE
@@ -446,65 +372,14 @@ async def inpaint(request: InpaintRequest):
         else:
             neg_prompt = config.DEFAULT_NEGATIVE_PROMPT
 
-        # Параметры для кэширования. Раньше сюда не входили engine/prompt/
-        # negative_prompt/invert_mask/fill_transparent и брались "сырые"
-        # guidance/steps из запроса вместо реально применённых — при смене
-        # ENGINE_TYPE или срабатывании FLUX-дефолтов кэш мог отдать чужой
-        # результат под тем же ключом.
-        params = {
-            "engine": engine.name,
-            "mode": request.mode,
-            "prompt": request.prompt,
-            "negative_prompt": neg_prompt,
-            "strength": request.strength,
-            "guidance_scale": effective_guidance,
-            "num_steps": effective_steps,
-            "controlnet_scale": request.controlnet_scale,
-            "feather": request.feather,
-            "expand": request.expand,
-            "seed": request.seed,
-            "invert_mask": request.invert_mask,
-            "fill_transparent": request.fill_transparent,
-            "crop_to_mask": request.crop_to_mask,
-            "crop_padding": request.crop_padding if request.crop_to_mask else 0,
-        }
-
-        # Проверяем кэш. Кэш теперь хранит уже полностью готовый финальный
-        # результат (после blend/paste_back/alpha, см. сохранение ниже), так
-        # что на попадании просто отдаём его как есть — раньше здесь
-        # ресайзился промежуточный (pre-paste_back/pre-alpha) результат, что
-        # могло вернуть визуально неверную картинку.
-        if config.CACHE_ENABLED and request.cache_dir:
-            cache_dir = Path(request.cache_dir) / config.CACHE_DIR_NAME
-            output_dir = Path(request.cache_dir) / config.OUTPUT_DIR_NAME
-            cache_manager = CacheManager(cache_dir, output_dir)
-
-            cached_result = cache_manager.get_cached_result(
-                image, mask, request.prompt, params
-            )
-            if cached_result is not None:
-                logger.info("Returning cached result")
-                return InpaintResponse(
-                    result=image_to_base64(cached_result),
-                    cached=True,
-                    width=cached_result.width,
-                    height=cached_result.height,
-                )
-
-        logger.info(f"=== INPAINT PARAMS ===")
-        logger.info(f"  mode: {mode}")
-        logger.info(f"  prompt: '{request.prompt}'")
-        logger.info(f"  negative_prompt: '{neg_prompt}'" if not is_flux_engine else "  negative_prompt: (ignored by FLUX)")
-        logger.info(f"  strength: {request.strength}")
-        logger.info(f"  guidance_scale: {effective_guidance}")
-        logger.info(f"  steps: {effective_steps}")
-        logger.info(f"  seed: {request.seed}")
-        logger.info(f"  image size: {image.size}")
-        logger.info(f"  mask size: {mask.size}")
+        logger.info(
+            f"Inpaint: mode={mode} engine={engine.name} prompt={request.prompt!r} "
+            f"guidance={effective_guidance} steps={effective_steps} seed={request.seed}"
+        )
 
         if config.DEBUG_SAVE_INTERMEDIATE:
-            image.save("/tmp/ae_debug_model_input.png")
-            mask.save("/tmp/ae_debug_model_mask.png")
+            prepared.model_image.save("/tmp/ae_debug_model_input.png")
+            prepared.model_mask.save("/tmp/ae_debug_model_mask.png")
 
         progress_info = {"step": 0, "total_steps": effective_steps, "stage": "inpainting"}
 
@@ -515,8 +390,8 @@ async def inpaint(request: InpaintRequest):
                 raise JobCancelled()
 
         inpaint_kwargs = dict(
-            image=image,
-            mask=mask,
+            image=prepared.model_image,
+            mask=prepared.model_mask,
             prompt=request.prompt,
             negative_prompt=neg_prompt,
             strength=request.strength,
@@ -527,10 +402,14 @@ async def inpaint(request: InpaintRequest):
             step_callback=on_step if mode == "ai" else None,
         )
 
-        # PowerPaint: always use object_removal (P_ctxt) — fills masked area with
-        # surrounding context. This is the correct mode for AE inpainting/removal.
+        # PowerPaint: без промпта — object_removal (заполнить контекстом), с
+        # промптом — text_guided (раньше промпт молча игнорировался), для
+        # expand — image_outpainting
         if mode == "ai" and isinstance(engine, PowerPaintEngine):
-            inpaint_kwargs["task"] = "object_removal"
+            if prepared.expand_mode:
+                inpaint_kwargs["task"] = "image_outpainting"
+            else:
+                inpaint_kwargs["task"] = "text_guided" if request.prompt.strip() else "object_removal"
 
         # Инференс — в threadpool, чтобы event loop оставался живым:
         # /progress и /cancel продолжают отвечать во время генерации, и
@@ -540,79 +419,14 @@ async def inpaint(request: InpaintRequest):
         if config.DEBUG_SAVE_INTERMEDIATE:
             result.save("/tmp/ae_debug_model_output.png")
 
-        # Защищаем пиксели за пределами маски (модель может их менять)
-        if use_ai:
-            blend_mask = mask  # уже resized к размеру модели
-            if result.size != blend_mask.size:
-                blend_mask = blend_mask.resize(result.size, Image.Resampling.LANCZOS)
-            result = Image.composite(result, image, blend_mask)
-            logger.info("Blended result with original outside mask")
-
-        # Возвращаем к размеру после crop — через Real-ESRGAN если нужно увеличить
-        if result.size != cropped_size:
-            target_w, target_h = cropped_size
-            result_w, result_h = result.size
-            scale_needed = max(target_w / result_w, target_h / result_h)
-
-            if scale_needed > 1.2:
-                # Апскейлим через Real-ESRGAN для качества
-                try:
-                    if not upscale_engine.is_loaded():
-                        logger.info("Auto-loading upscale engine...")
-                        await run_in_threadpool(upscale_engine.load)
-
-                    esrgan_scale = 4 if scale_needed > 2.5 else 2
-                    progress_info = {"step": 0, "total_steps": 0, "stage": "upscaling"}
-                    logger.info(f"Upscaling result: {result.size} x{esrgan_scale} (need {scale_needed:.1f}x)")
-                    result = await run_in_threadpool(
-                        lambda: upscale_engine.upscale(result, scale=esrgan_scale, model_type="anime")
-                    )
-                except Exception as e:
-                    logger.warning(f"Upscale failed, using LANCZOS: {e}")
-
-            # Точный ресайз до нужного размера
-            if result.size != cropped_size:
-                result = result.resize(cropped_size, Image.Resampling.LANCZOS)
-
-        # Вставляем обратно в оригинал если был crop
-        if crop_bbox:
-            result = paste_back(original_image, result, crop_bbox, original_mask)
-            logger.info(f"Pasted back to original: {result.size}")
-
-        # Финальная проверка размера
-        if result.size != original_size:
-            result = result.resize(original_size, Image.Resampling.LANCZOS)
-
-        # Восстанавливаем прозрачный фон если был
-        if original_alpha is not None:
-            import numpy as np
-            result = result.convert("RGBA")
-            if request.fill_transparent:
-                # Fill transparent: в области маски ставим alpha=255 (непрозрачно),
-                # за пределами маски — оригинальный alpha
-                alpha_arr = np.array(original_alpha)
-                mask_arr = np.array(original_mask)
-                alpha_arr[mask_arr > 128] = 255
-                result.putalpha(Image.fromarray(alpha_arr))
-                logger.info("Restored alpha with fill_transparent (mask area forced opaque)")
-            else:
-                result.putalpha(original_alpha)
-                logger.info("Restored alpha channel (transparent background)")
-
-        if config.DEBUG_SAVE_INTERMEDIATE:
-            result.save("/tmp/ae_debug_final_result.png")
-
-        # Сохраняем в кэш ФИНАЛЬНЫЙ результат (после blend/paste_back/alpha).
-        # Раньше кэшировался промежуточный результат до этих шагов, и
-        # cache-hit возвращал его без paste_back/alpha-коррекции.
-        if config.CACHE_ENABLED and cache_manager:
-            cache_manager.save_to_cache(image, mask, result, request.prompt, params)
+        result = await run_in_threadpool(lambda: pipeline.finish(prepared, result))
+        logger.info(f"Composited onto original: {result.mode} {result.size}")
 
         progress_info = {"step": 0, "total_steps": 0, "stage": "done"}
 
+        encoded = await run_in_threadpool(image_to_base64, result)
         return InpaintResponse(
-            result=image_to_base64(result),
-            cached=False,
+            result=encoded,
             width=result.width,
             height=result.height,
         )
@@ -664,13 +478,14 @@ async def upscale(request: UpscaleRequest):
             await run_in_threadpool(upscale_engine.load, model_type)
 
         result = await run_in_threadpool(
-            lambda: upscale_engine.upscale(image=ensure_rgb(image), scale=scale, model_type=model_type)
+            lambda: upscale_engine.upscale(image=image, scale=scale, model_type=model_type)
         )
 
         logger.info(f"Upscale completed: {result.size}")
 
+        encoded = await run_in_threadpool(image_to_base64, result)
         return UpscaleResponse(
-            result=image_to_base64(result),
+            result=encoded,
             width=result.width,
             height=result.height,
             scale=scale,
@@ -683,22 +498,6 @@ async def upscale(request: UpscaleRequest):
         raise HTTPException(status_code=500, detail=str(e))
       finally:
         current_job.update({"id": None, "active": False, "cancel_event": None})
-
-
-@app.post("/clear-cache")
-async def clear_cache(cache_dir: str):
-    """Очищает кэш проекта"""
-    try:
-        cache_path = Path(cache_dir) / config.CACHE_DIR_NAME
-        output_path = Path(cache_dir) / config.OUTPUT_DIR_NAME
-
-        cm = CacheManager(cache_path, output_path)
-        cm.clear_cache()
-
-        return {"status": "cleared"}
-    except Exception as e:
-        logger.error(f"Failed to clear cache: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

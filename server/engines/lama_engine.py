@@ -19,6 +19,10 @@ class LamaEngine(BaseEngine):
     Один forward pass (~1-3 сек на GPU/MPS, дольше на CPU).
     """
 
+    # LaMa полностью свёрточная и работает в любом разрешении; лимит только
+    # защищает память на очень больших кропах (4K+).
+    max_resolution = 2048
+
     def __init__(self, device: Optional[str] = None):
         self._model = None
         if device:

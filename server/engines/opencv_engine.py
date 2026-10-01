@@ -21,6 +21,9 @@ class OpenCVEngine(BaseEngine):
     Fast, no AI hallucinations, good for simple patterns.
     """
 
+    # Работает в любом разрешении и с любыми размерами
+    size_divisor = 1
+
     def __init__(self, method: str = "telea"):
         """
         Args:
