@@ -6,6 +6,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
 
+
 let csInterface;
 let isProcessing = false;
 let upscaleCancelled = false;
@@ -56,7 +57,6 @@ function init() {
     elements.btnInpaint = document.getElementById('btn-inpaint');
     elements.btnStop = document.getElementById('btn-stop');
     elements.btnToggleSettings = document.getElementById('btn-toggle-settings');
-    elements.btnDebug = document.getElementById('btn-debug');
     elements.btnDebugMode = document.getElementById('btn-debug-mode');
     elements.settingsPanel = document.getElementById('settings-panel');
     elements.devTools = document.getElementById('dev-tools');
@@ -119,7 +119,6 @@ function init() {
     elements.btnInpaint.addEventListener('click', handleInpaint);
     elements.btnStop.addEventListener('click', handleStop);
     elements.btnToggleSettings.addEventListener('click', handleToggleSettings);
-    elements.btnDebug.addEventListener('click', handleDebugExport);
     elements.btnDebugMode.addEventListener('click', handleToggleDebugMode);
     elements.btnFirstRunCancel.addEventListener('click', hideFirstRunModal);
     elements.btnFirstRunContinue.addEventListener('click', handleFirstRunContinue);
@@ -159,10 +158,19 @@ function init() {
         log('Dev tools enabled');
     };
 
+    Files.cleanStaleTemp();
     // Check initial server status — was previously just defaulting to
     // "Offline" on every panel open even when the server was already
     // running from a prior session, since no actual /health call happened.
-    isServerOnline().then(online => updateServerStatus(online));
+    isServerOnline().then(online => {
+        updateServerStatus(online);
+        if (online) attachToServer();
+    });
+}
+
+// Paths go into ExtendScript as forward-slash strings
+function jsxPath(p) {
+    return jsxStr(p.replace(/\\/g, '/'));
 }
 
 // Safe wrapper for building ExtendScript string literals from JS values.
@@ -397,8 +405,10 @@ async function handleStop() {
         // Best-effort — server may already be done, or unreachable.
     }
 
-    hideProgress();
-    log('Stopped');
+    // Прогресс прячет finally прерванного обработчика: если спрятать здесь,
+    // isProcessing сбросится раньше, чем тот завершится, и новую задачу можно
+    // запустить поверх ещё не закончившейся старой.
+    updateProgress('Stopping...', '');
     // Server process itself stays running (model stays loaded) for the next request.
 }
 
@@ -451,44 +461,70 @@ function startServer() {
         log('Starting server...');
         updateServerStatus(false, true);
 
-        serverProcess = spawn(venvPython, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '7860'], {
+        // Обработчики ниже относятся только к ЭТОМУ процессу: таймер или
+        // exit старого, упавшего при старте процесса не должны трогать новый,
+        // запущенный повторным кликом
+        const proc = spawn(venvPython, ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '7860'], {
             cwd: path.join(projectPath, 'server'),
-            env: { ...process.env, PYTHONUNBUFFERED: '1' }
+            env: { ...process.env, PYTHONUNBUFFERED: '1', AE_INPAINT_PARENT_PID: String(process.pid) }
         });
+        serverProcess = proc;
 
         let started = false;
+        let portBusy = false;
+        // первый старт импортирует torch — на холодном диске это не 30 с
+        const timer = setTimeout(() => {
+            if (!started) {
+                // Иначе зависший процесс остаётся сиротой, а следующий клик
+                // запускает ещё один поверх
+                proc.kill('SIGTERM');
+                reject(new Error('Server start timeout'));
+            }
+        }, 90000);
 
-        serverProcess.stderr.on('data', (data) => {
+        proc.stderr.on('data', (data) => {
             const msg = data.toString();
             logVerbose('[server] ' + msg.trim());
-            if (!started && (msg.includes('Uvicorn running') || msg.includes('Application startup complete'))) {
+            if (/address already in use/i.test(msg)) {  // macOS: "Address already in use"
+                portBusy = true;
+            }
+            // Только "Uvicorn running on": "Application startup complete"
+            // печатается ДО попытки занять порт, и при занятом 7860 (это порт
+            // Gradio по умолчанию) панель считала чужое приложение своим
+            if (!started && msg.includes('Uvicorn running on')) {
                 started = true;
+                clearTimeout(timer);
                 updateServerStatus(true);
                 log('Server ready', 'success');
                 resolve();
             }
         });
 
-        serverProcess.stdout.on('data', (data) => {
+        proc.stdout.on('data', (data) => {
             logVerbose('[server] ' + data.toString().trim());
         });
 
-        serverProcess.on('error', (err) => {
+        proc.on('error', (err) => {
+            clearTimeout(timer);
             updateServerStatus(false);
             reject(new Error(`Server error: ${err.message}`));
         });
 
-        serverProcess.on('exit', (code) => {
-            serverProcess = null;
-            updateServerStatus(false);
+        proc.on('exit', (code) => {
+            clearTimeout(timer);
+            if (!started) {
+                // Упал при старте (сломанный venv, занятый порт) — сразу
+                // ошибка, а не 90 с оверлея без кнопки Stop
+                reject(new Error(portBusy
+                    ? 'Port 7860 is used by another application — close it and try again'
+                    : `Server exited during startup (code ${code}). See ${Files.TEMP_ROOT}/server.log`));
+            }
+            if (serverProcess === proc) {
+                serverProcess = null;
+                updateServerStatus(false);
+            }
             logVerbose('Server stopped');
         });
-
-        setTimeout(() => {
-            if (!started) {
-                reject(new Error('Server start timeout'));
-            }
-        }, 30000);
     });
 }
 
@@ -499,6 +535,38 @@ function stopServer() {
         serverProcess = null;
         updateServerStatus(false);
     }
+}
+
+// Сервер может быть общим для нескольких панелей (второй экземпляр AE,
+// переоткрытая панель): каждая сообщает свой PID, и сервер выключается сам,
+// только когда закрылись все. Поэтому при закрытии панели сервер не
+// убиваем — им может пользоваться другая.
+async function attachToServer() {
+    try {
+        return await API.attach(process.pid);
+    } catch (e) {
+        logVerbose('Attach failed: ' + e.message);
+        return null;
+    }
+}
+
+// Запускает сервер, если он не отвечает, и регистрирует панель
+async function ensureServer() {
+    if (await isServerOnline()) {
+        const attached = await attachToServer();
+        if (attached && attached.status !== 'shutting_down') return;
+        // attach упал: старый сервер без /attach (ок, работаем с ним) или
+        // сервер умер между запросами — тогда запускаем новый
+        if (!attached && await isServerOnline()) return;
+        // Сервер как раз выключается (закрылась последняя панель) — ждём,
+        // пока он освободит порт, и запускаем новый
+        for (let i = 0; i < 50 && await isServerOnline(); i++) {
+            await new Promise(r => setTimeout(r, 200));
+        }
+    }
+    showProgress('Starting server...', 'This may take a moment');
+    await startServer();
+    await attachToServer();
 }
 
 async function isServerOnline() {
@@ -555,6 +623,7 @@ function getSettings() {
 
 async function handleInpaint() {
     if (isProcessing) return;
+    let jobDir = null;
 
     const mode = getMode();
 
@@ -571,11 +640,7 @@ async function handleInpaint() {
         showProgress('Preparing...', 'Checking server status');
 
         // Start server if needed
-        if (!(await isServerOnline())) {
-            showProgress('Starting server...', 'This may take a moment');
-            await startServer();
-            await new Promise(r => setTimeout(r, 1000));
-        }
+        await ensureServer();
 
         const modeLabels = { remove: 'Remove', ai: 'AI Generate', clean: 'Classic' };
         log('Starting ' + (modeLabels[mode] || mode) + '...');
@@ -589,8 +654,11 @@ async function handleInpaint() {
             throw new Error('ExtendScript error. Reload panel.');
         }
         if (projectInfo.error) throw new Error(projectInfo.error);
-        if (!projectInfo.projectPath) throw new Error('Save project first');
+        if (!projectInfo.projectPath) log(`Project not saved — results go to ~/Documents/${Files.RESULTS_FOLDER_NAME}`);
         log(`${projectInfo.compName}, frame ${projectInfo.currentFrame}`);
+        // Папку результатов создаём до генерации: на read-only томе ошибка
+        // должна прийти сразу, а не после минуты работы модели
+        const outputDir = Files.getResultsDir(projectInfo.projectPath);
 
         // 2. Selected layer with mask
         showProgress('Preparing...', 'Checking layer and mask');
@@ -600,33 +668,33 @@ async function handleInpaint() {
         log(`Layer: ${layerInfo.name}${layerInfo.noMask ? ' (expand mode)' : ''}`);
 
         // 3. Export
-        const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
+        jobDir = Files.makeJobDir();
         let imageBase64, maskBase64;
 
         if (layerInfo.noMask) {
             // No mask mode: export layer frame, server will generate mask from alpha
             showProgress('Exporting...', 'Rendering layer (expand mode)');
             const exportResult = await evalScript(
-                `exportLayerFrame(${layerInfo.index}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
+                `exportLayerFrame(${layerInfo.index}, ${jsxPath(jobDir)})`
             );
             let parsed = typeof exportResult === 'string' ? JSON.parse(exportResult) : exportResult;
             if (parsed.error) throw new Error(parsed.error);
 
             showProgress('Loading...', 'Reading exported file');
-            imageBase64 = await fileToBase64(parsed.imagePath);
+            imageBase64 = await Files.readRenderedPng(parsed.imagePath);
             maskBase64 = '';  // Empty - server generates from alpha
         } else {
             // Has mask: export both image and mask
             showProgress('Exporting...', 'Rendering layer and mask');
             const exportResult = await evalScript(
-                `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
+                `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, ${jsxPath(jobDir)})`
             );
             logVerbose('Export result: ' + JSON.stringify(exportResult));
             if (exportResult.error) throw new Error(exportResult.error);
 
             showProgress('Loading...', 'Reading exported files');
-            imageBase64 = await fileToBase64(exportResult.imagePath);
-            maskBase64 = await fileToBase64(exportResult.maskPath);
+            imageBase64 = await Files.readRenderedPng(exportResult.imagePath);
+            maskBase64 = await Files.readRenderedPng(exportResult.maskPath);
             logVerbose(`Image b64: ${imageBase64.length}, Mask b64: ${maskBase64.length}`);
         }
 
@@ -680,70 +748,30 @@ async function handleInpaint() {
 
         // 6. Save result
         showProgress('Importing...', 'Saving result file');
-        const outputDir = projectInfo.projectPath + '/_AI_OUT';
         // compName was previously used unsanitized in a filesystem path —
         // AE composition names can contain "/" and other characters that
         // aren't safe there (layer names elsewhere in this file already get
         // sanitized the same way for the same reason, see safeName below).
         const safeCompName = projectInfo.compName.replace(/[^a-zA-Z0-9]/g, '_');
-        const resultPath = `${outputDir}/${safeCompName}_f${projectInfo.currentFrame}_${Date.now()}.png`;
-        await base64ToFile(result.result, resultPath);
+        const resultPath = path.join(outputDir, `${safeCompName}_f${projectInfo.currentFrame}_${Date.now()}.png`);
+        await Files.base64ToFile(result.result, resultPath);
 
         // 7. Import to AE
         showProgress('Importing...', 'Adding layer to composition');
         const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const resultLayerName = `Inpaint ${timestamp}`;
         const importResult = await evalScript(
-            `importResultAsLayer(${jsxStr(resultPath.replace(/\\/g, '/'))}, ${layerInfo.index}, ${jsxStr(resultLayerName)})`
+            `importResultAsLayer(${jsxPath(resultPath)}, ${layerInfo.index}, ${jsxStr(resultLayerName)})`
         );
         if (importResult.error) throw new Error(importResult.error);
 
         log(`Created: ${importResult.layerName}`, 'success');
 
-        // Cleanup temp cache files
-        try {
-            const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
-            const fs = require('fs');
-            const path = require('path');
-            if (fs.existsSync(cacheDir)) {
-                const files = fs.readdirSync(cacheDir);
-                files.forEach(file => {
-                    // Only delete image/mask PNGs, keep cache metadata
-                    if (file.endsWith('_image.png') || file.endsWith('_mask.png')) {
-                        fs.unlinkSync(path.join(cacheDir, file));
-                    }
-                });
-                logVerbose('Temp files cleaned');
-            }
-        } catch (e) {
-            logVerbose('Cleanup error: ' + e.message);
-        }
-
     } catch (error) {
         log(error.message, 'error');
     } finally {
+        if (jobDir) Files.removeDir(jobDir);
         hideProgress();
-    }
-}
-
-async function handleDebugExport() {
-    try {
-        log('Exporting debug files...');
-        const projectInfo = await evalScript('getProjectInfo()');
-        if (projectInfo.error) throw new Error(projectInfo.error);
-
-        const layerInfo = await evalScript('getSelectedLayerWithMask()');
-        if (layerInfo.error) throw new Error(layerInfo.error);
-
-        const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
-        const exportResult = await evalScript(
-            `exportForInpaint(${layerInfo.index}, ${layerInfo.selectedMaskIndex}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
-        );
-        if (exportResult.error) throw new Error(exportResult.error);
-
-        log('Exported to _AI_CACHE folder', 'success');
-    } catch (error) {
-        log(error.message, 'error');
     }
 }
 
@@ -774,6 +802,7 @@ function getUpscaleSettings() {
 
 async function handleUpscale() {
     if (isProcessing) return;
+    let jobDir = null;
 
     upscaleCancelled = false;
 
@@ -781,11 +810,7 @@ async function handleUpscale() {
         showProgress('Preparing...', 'Checking server');
 
         // Start server once
-        if (!(await isServerOnline())) {
-            showProgress('Starting server...', 'This may take a moment');
-            await startServer();
-            await new Promise(r => setTimeout(r, 1000));
-        }
+        await ensureServer();
 
         const settings = getUpscaleSettings();
 
@@ -793,10 +818,10 @@ async function handleUpscale() {
         showProgress('Preparing...', 'Getting project info');
         const projectInfo = await evalScript('getProjectInfo()');
         if (projectInfo.error) throw new Error(projectInfo.error);
-        if (!projectInfo.projectPath) throw new Error('Save project first');
+        if (!projectInfo.projectPath) log(`Project not saved — results go to ~/Documents/${Files.RESULTS_FOLDER_NAME}`);
 
-        const cacheDir = projectInfo.projectPath + '/_AI_CACHE';
-        const outputDir = projectInfo.projectPath + '/_AI_OUT';
+        jobDir = Files.makeJobDir();
+        const outputDir = Files.getResultsDir(projectInfo.projectPath);
 
         // Get all selected layers
         showProgress('Preparing...', 'Getting layers');
@@ -828,7 +853,7 @@ async function handleUpscale() {
             let exportResult;
             try {
                 let rawResult = await evalScript(
-                    `exportLayerFrame(${layer.index}, ${jsxStr(cacheDir.replace(/\\/g, '/'))})`
+                    `exportLayerFrame(${layer.index}, ${jsxPath(jobDir)})`
                 );
                 // Handle case where result is still a string
                 if (typeof rawResult === 'string') {
@@ -854,7 +879,7 @@ async function handleUpscale() {
             if (upscaleCancelled) break;
 
             // Read file
-            const imageBase64 = await fileToBase64(exportResult.imagePath);
+            const imageBase64 = await Files.readRenderedPng(exportResult.imagePath);
             console.log(`Read ${exportResult.imagePath}: ${imageBase64?.length || 0} bytes`);
 
             if (upscaleCancelled) break;
@@ -877,13 +902,13 @@ async function handleUpscale() {
 
             // Save result (with timestamp to avoid stale files)
             const safeName = layer.name.replace(/[^a-zA-Z0-9]/g, '_');
-            const resultPath = `${outputDir}/${safeName}_x${settings.scale}_${Date.now()}.png`;
-            await base64ToFile(result.result, resultPath);
+            const resultPath = path.join(outputDir, `${safeName}_x${settings.scale}_${Date.now()}.png`);
+            await Files.base64ToFile(result.result, resultPath);
 
             // Import - use the INDEX from export result (current position)
             showProgress(`${num}/${layers.length}`, `Importing...`);
             const importResult = await evalScript(
-                `importResultAsLayer(${jsxStr(resultPath.replace(/\\/g, '/'))}, ${exportResult.layerIndex}, ${jsxStr(layer.name + ' x' + settings.scale)}, ${100 / settings.scale})`
+                `importResultAsLayer(${jsxPath(resultPath)}, ${exportResult.layerIndex}, ${jsxStr(layer.name + ' x' + settings.scale)}, ${100 / settings.scale})`
             );
             if (importResult.error) {
                 log(`Import error: ${importResult.error}`, 'error');
@@ -902,6 +927,7 @@ async function handleUpscale() {
         console.error('handleUpscale error:', error);
         log(error.message, 'error');
     } finally {
+        if (jobDir) Files.removeDir(jobDir);
         hideProgress();
     }
 }

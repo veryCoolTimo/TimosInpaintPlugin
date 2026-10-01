@@ -19,7 +19,8 @@ venv/
 # macOS
 .DS_Store
 
-# AI cache
+# Results / old cache folders (if a project lives inside the repo)
+AE Inpaint Results/
 _AI_CACHE/
 _AI_OUT/
 CLAUDE.md

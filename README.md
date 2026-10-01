@@ -22,15 +22,11 @@ for watching server logs directly while developing).
 
 ## How to Use
 
-1. **Save your AE project first.** The panel needs a project path to know
-   where to write cache/output files, and fails immediately if the project
-   was never saved.
+1. Open panel: `Window > Extensions > AE Inpaint`
 
-2. Open panel: `Window > Extensions > AE Inpaint`
+2. Select layer with your image
 
-3. Select layer with your image
-
-4. Pick a mode:
+3. Pick a mode:
    - **Remove** — LaMa. Fast, no prompt, good for plain object removal.
    - **AI Gen** — the configured diffusion engine (FLUX.1 Fill by default;
      see `server/config.py`). Slower, supports a text prompt, best for
@@ -39,7 +35,7 @@ for watching server logs directly while developing).
      defects/simple textures; no hallucinations but no real understanding
      of content either.
 
-5. Draw a mask on the selected layer (standard AE mask, `G` for the Pen
+4. Draw a mask on the selected layer (standard AE mask, `G` for the Pen
    tool). White/inside area = what gets inpainted. If the layer has several
    masks, the one currently selected in the AE timeline is used (Mask 1 if
    none is selected).
@@ -49,7 +45,7 @@ for watching server logs directly while developing).
    footage that already has transparency. A layer with neither a mask nor
    an alpha channel returns an error.
 
-6. Click **Inpaint**. **Stop** cancels the in-flight request and asks the
+5. Click **Inpaint**. **Stop** cancels the in-flight request and asks the
    server to abort generation between steps — the server may still finish
    the step it was already on, but no layer gets imported after a cancel.
 
@@ -58,6 +54,27 @@ composition's resolution with the source layer's position/anchor/scale/
 rotation baked in. It is **not** a live-linked layer — effects, track
 mattes, 3D, parenting and time-remapping on the source layer are not
 carried over, and the new layer won't follow further edits to the source.
+
+## Files
+
+- **Results** are saved to `AE Inpaint Results/` next to your `.aep`
+  (or `~/Documents/AE Inpaint Results/` if the project was never saved) and
+  imported into an `AE Inpaint Results` folder in the Project panel. Keep
+  these files — the layers in your project reference them.
+- **Temporary renders** (frame + mask sent to the server) go to the system
+  temp folder (`$TMPDIR/ae-inpaint/`) and are deleted after every run, even
+  on error or Stop. Leftovers from a crash are removed the next time the
+  panel opens (if older than a day).
+- **Server log**: `$TMPDIR/ae-inpaint/server.log` (+ `server.log.1`,
+  rotated at 2 MB).
+- The local server is started by the panel. Every open panel registers with
+  it; when all of them are closed (or After Effects quits) the server cancels
+  any running job and shuts down within a few seconds. A server started by
+  hand with `scripts/start_server.sh` is never shut down automatically, even
+  if panels connected to it.
+- Older versions wrote `_AI_CACHE/` and `_AI_OUT/` next to the project.
+  `_AI_CACHE` can be deleted; `_AI_OUT` holds results that older projects may
+  still reference.
 
 ## Settings
 

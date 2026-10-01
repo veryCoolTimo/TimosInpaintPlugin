@@ -3,6 +3,11 @@ FastAPI сервер для инпейнтинга
 """
 import asyncio
 import logging
+import os
+import signal
+import tempfile
+import time
+from logging.handlers import RotatingFileHandler
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -26,13 +31,16 @@ class JobCancelled(Exception):
     """Поднимается из step_callback, когда пользователь нажал Stop."""
     pass
 
-# Настройка логирования — и в консоль, и в файл
+# Логирование: консоль + файл в системном temp с ротацией (раньше
+# /tmp/ae_inpaint_server.log дописывался бесконечно)
+LOG_DIR = Path(tempfile.gettempdir()) / "ae-inpaint"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("/tmp/ae_inpaint_server.log"),
+        RotatingFileHandler(LOG_DIR / "server.log", maxBytes=2 * 1024 * 1024, backupCount=1),
     ]
 )
 logger = logging.getLogger(__name__)
@@ -66,12 +74,68 @@ current_job = {
 }
 
 
+# PID панелей CEP, которые пользуются сервером. Сервер запускает одна
+# панель, но переиспользовать его может и другая (второй экземпляр AE,
+# переоткрытая панель) — каждая регистрируется через /attach. Когда все
+# панели закрылись, сервер с моделями на гигабайты сам выключается, а не
+# висит до перезагрузки.
+attached_pids: set = set()
+attached_lock = threading.Lock()
+# Сервер, запущенный панелью (есть AE_INPAINT_PARENT_PID), выключается сам;
+# запущенный вручную (start_server.sh) — никогда, даже если панели к нему
+# подключались
+managed_by_panel = False
+shutting_down = False
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # процесс жив, просто чужой
+    return True
+
+
+def watch_panels(interval: float = 5.0) -> None:
+    def loop():
+        global shutting_down
+        while True:
+            time.sleep(interval)
+            with attached_lock:
+                for pid in [p for p in attached_pids if not _pid_alive(p)]:
+                    attached_pids.discard(pid)
+                    logger.info(f"Panel process {pid} is gone")
+                if attached_pids:
+                    continue
+                # Под тем же lock: /attach после этого момента получит 503,
+                # а не "ок" от сервера, который через миг выключится
+                shutting_down = True
+            logger.info("All panels are gone — shutting down")
+            # Иначе uvicorn дождётся конца текущей генерации (для FLUX —
+            # минуты работы GPU на клиента, которого уже нет)
+            if current_job["cancel_event"] is not None:
+                current_job["cancel_event"].set()
+            os.kill(os.getpid(), signal.SIGTERM)
+            return
+
+    threading.Thread(target=loop, name="panel-watchdog", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle: загрузка/выгрузка модели"""
     global ai_engine, lama_engine, opencv_engine, upscale_engine
 
     logger.info("Starting server...")
+
+    global managed_by_panel
+    parent_pid = os.environ.get("AE_INPAINT_PARENT_PID")
+    if parent_pid and parent_pid.isdigit():
+        managed_by_panel = True
+        attached_pids.add(int(parent_pid))
+        watch_panels(float(os.environ.get("AE_INPAINT_WATCH_INTERVAL", "5")))
 
     # Инициализируем движки
     if config.ENGINE_TYPE == "flux":
@@ -252,6 +316,26 @@ async def health_check():
     )
 
 
+class AttachRequest(BaseModel):
+    pid: int = Field(..., gt=0)
+
+
+@app.post("/attach")
+async def attach(request: AttachRequest):
+    """Панель сообщает свой PID: сервер не выключится, пока она открыта"""
+    if not managed_by_panel:
+        return {"status": "unmanaged", "panels": 0}
+    # PID 1 и чужие "вечные" процессы держали бы сервер вечно, а мёртвый PID
+    # мог бы погасить его — CORS открыт, прислать может любая страница
+    if request.pid <= 1 or not _pid_alive(request.pid):
+        raise HTTPException(status_code=400, detail="Process is not running")
+    with attached_lock:
+        if shutting_down:
+            raise HTTPException(status_code=503, detail="Server is shutting down")
+        attached_pids.add(request.pid)
+        return {"status": "attached", "panels": len(attached_pids)}
+
+
 @app.post("/load")
 async def load_model():
     """Загружает AI модель в память"""
@@ -378,8 +462,8 @@ async def inpaint(request: InpaintRequest):
         )
 
         if config.DEBUG_SAVE_INTERMEDIATE:
-            prepared.model_image.save("/tmp/ae_debug_model_input.png")
-            prepared.model_mask.save("/tmp/ae_debug_model_mask.png")
+            prepared.model_image.save(LOG_DIR / "debug_model_input.png")
+            prepared.model_mask.save(LOG_DIR / "debug_model_mask.png")
 
         progress_info = {"step": 0, "total_steps": effective_steps, "stage": "inpainting"}
 
@@ -417,7 +501,7 @@ async def inpaint(request: InpaintRequest):
         result = await run_in_threadpool(lambda: engine.inpaint(**inpaint_kwargs))
 
         if config.DEBUG_SAVE_INTERMEDIATE:
-            result.save("/tmp/ae_debug_model_output.png")
+            result.save(LOG_DIR / "debug_model_output.png")
 
         result = await run_in_threadpool(lambda: pipeline.finish(prepared, result))
         logger.info(f"Composited onto original: {result.mode} {result.size}")

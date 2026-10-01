@@ -120,7 +120,32 @@ AEI.getSelectedLayerWithMask = function() {
     }
 };
 
-// Render ALL layer masks as PNG (combined)
+// Find a top-level project folder by name
+AEI.findRootFolder = function(name) {
+    var root = app.project.rootFolder;
+    for (var i = 1; i <= root.numItems; i++) {
+        var item = root.item(i);
+        if (item instanceof FolderItem && item.name === name) return item;
+    }
+    return null;
+};
+
+// Remove temp solids' footage items (and AE's "Solids" folder if it was
+// created just for them). Removing the temp comp leaves its solids behind —
+// previously every inpaint left two solids in the project.
+AEI.removeTempSolids = function(sources, solidsFolderExisted) {
+    for (var i = 0; i < sources.length; i++) {
+        try { if (sources[i]) sources[i].remove(); } catch (e) {}
+    }
+    if (!solidsFolderExisted) {
+        var folder = AEI.findRootFolder("Solids");
+        if (folder && folder.numItems === 0) {
+            try { folder.remove(); } catch (e) {}
+        }
+    }
+};
+
+// Render the selected layer mask as PNG
 AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
     var comp = app.project.activeItem;
 
@@ -133,8 +158,12 @@ AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
         return JSON.stringify({ error: "Layer not found" });
     }
 
+    var solidSources = [];
+    var solidsFolderExisted = AEI.findRootFolder("Solids") !== null;
+    var tempComp = null;
+
     try {
-        var tempComp = app.project.items.addComp(
+        tempComp = app.project.items.addComp(
             "_MaskRender_",
             comp.width,
             comp.height,
@@ -150,6 +179,7 @@ AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
             comp.height,
             comp.pixelAspect
         );
+        solidSources.push(blackSolid.source);
 
         // Solid must match source layer dimensions so mask coords are in the same space
         var whiteSolid = tempComp.layers.addSolid(
@@ -159,6 +189,7 @@ AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
             layer.height,
             comp.pixelAspect
         );
+        solidSources.push(whiteSolid.source);
 
         whiteSolid.position.setValue(layer.position.valueAtTime(comp.time, false));
         whiteSolid.anchorPoint.setValue(layer.anchorPoint.valueAtTime(comp.time, false));
@@ -196,18 +227,13 @@ AEI.renderLayerMask = function(layerIndex, maskIndex, outputPath) {
         tempComp.saveFrameToPng(comp.time, file);
 
         tempComp.remove();
+        AEI.removeTempSolids(solidSources, solidsFolderExisted);
 
         return JSON.stringify({ success: true, path: outputPath, maskIndex: maskIndex, maskName: sourceMask.name });
 
     } catch (e) {
-        try {
-            for (var i = app.project.numItems; i >= 1; i--) {
-                if (app.project.item(i).name === "_MaskRender_") {
-                    app.project.item(i).remove();
-                    break;
-                }
-            }
-        } catch (e2) {}
+        try { if (tempComp) tempComp.remove(); } catch (e2) {}
+        AEI.removeTempSolids(solidSources, solidsFolderExisted);
 
         return JSON.stringify({ error: "Mask render failed: " + e.toString() });
     }
@@ -297,6 +323,8 @@ AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName, s
         return JSON.stringify({ error: "No active composition" });
     }
 
+    var footage = null;
+    var newLayer = null;
     try {
         var file = new File(pngPath);
         if (!file.exists) {
@@ -321,10 +349,20 @@ AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName, s
             return JSON.stringify({ error: "Source layer not found: " + sourceLayerIndexOrName });
         }
 
-        var importOptions = new ImportOptions(file);
-        var footage = app.project.importFile(importOptions);
+        // One undo step for the whole import
+        app.beginUndoGroup("AE Inpaint: import result");
 
-        var newLayer = comp.layers.add(footage);
+        var importOptions = new ImportOptions(file);
+        footage = app.project.importFile(importOptions);
+
+        // Keep results together instead of piling up in the project root
+        var resultsFolder = AEI.findRootFolder("AE Inpaint Results");
+        if (!resultsFolder) {
+            resultsFolder = app.project.items.addFolder("AE Inpaint Results");
+        }
+        footage.parentFolder = resultsFolder;
+
+        newLayer = comp.layers.add(footage);
         newLayer.name = layerName || "Inpaint Result";
 
         newLayer.moveBefore(sourceLayer);
@@ -342,6 +380,8 @@ AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName, s
         // Do NOT copy source layer transform — it would apply it twice.
         // Default AE placement (center footage in comp) is correct for comp-sized footage.
 
+        app.endUndoGroup();
+
         return JSON.stringify({
             success: true,
             layerName: newLayer.name,
@@ -349,6 +389,10 @@ AEI.importResultAsLayer = function(pngPath, sourceLayerIndexOrName, layerName, s
         });
 
     } catch (e) {
+        // Don't leave a half-imported result behind
+        try { if (newLayer) newLayer.remove(); } catch (e2) {}
+        try { if (footage) footage.remove(); } catch (e3) {}
+        try { app.endUndoGroup(); } catch (e4) {}
         return JSON.stringify({ error: "Import failed: " + e.toString() });
     }
 };
@@ -368,8 +412,8 @@ AEI.exportForInpaint = function(layerIndex, maskIndex, outputFolder) {
     var maskPath = outputFolder + "/" + prefix + "_mask.png";
 
     var folder = new Folder(outputFolder);
-    if (!folder.exists) {
-        folder.create();
+    if (!folder.exists && !folder.create()) {
+        return JSON.stringify({ error: "Can't create folder: " + outputFolder });
     }
 
     var imageResult = JSON.parse(AEI.renderLayerSolo(layerIndex, imagePath));
@@ -495,8 +539,8 @@ AEI.exportLayerFrame = function(layerIndexOrName, outputFolder) {
     var imagePath = outputFolder + "/" + prefix + ".png";
 
     var folder = new Folder(outputFolder);
-    if (!folder.exists) {
-        folder.create();
+    if (!folder.exists && !folder.create()) {
+        return JSON.stringify({ error: "Can't create folder: " + outputFolder });
     }
 
     // Use current layer index (may have changed)

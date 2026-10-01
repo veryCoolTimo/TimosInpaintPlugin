@@ -56,7 +56,6 @@ MODELS_DIR = BASE_DIR / "models"
 # Логирование
 LOG_LEVEL = "INFO"
 
-# Отладка: сохранять промежуточные PNG (raw image/mask, model input/output,
-# final result) в /tmp на каждый запрос. Раньше это было включено всегда —
-# лишний I/O и утечка кадров пользователя в системный temp на каждый инпейнт.
+# Отладка: сохранять вход/маску/выход модели в $TMPDIR/ae-inpaint/ на
+# каждый запрос. Выключено: лишний I/O и копии кадров пользователя.
 DEBUG_SAVE_INTERMEDIATE = False

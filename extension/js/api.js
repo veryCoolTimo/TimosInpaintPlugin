@@ -14,6 +14,25 @@ const API = {
     _activeController: null,
 
     /**
+     * POST, который при 409 (сервер ещё доделывает прошлую задачу — например,
+     * LaMa после Stop дорабатывает пару секунд) немного ждёт и повторяет,
+     * вместо ошибки "Server is busy" сразу после Stop.
+     */
+    async _postWhenFree(path, body, signal) {
+        const payload = JSON.stringify(body);
+        for (let attempt = 0; ; attempt++) {
+            const response = await fetch(`${this.baseUrl}${path}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                signal
+            });
+            if (response.status !== 409 || attempt >= 60) return response;  // до ~30 с
+            await new Promise(r => setTimeout(r, 500));
+        }
+    },
+
+    /**
      * Прерывает текущий активный запрос /inpaint или /upscale, если есть.
      */
     abortCurrent() {
@@ -64,12 +83,31 @@ const API = {
                 signal: controller.signal
             });
             if (!response.ok) throw new Error('Server unhealthy');
-            return await response.json();
+            const health = await response.json();
+            // На 7860 может висеть чужое приложение (Gradio и т.п.)
+            if (health.status !== 'ok' || !('engine' in health)) {
+                throw new Error('Port 7860 is used by another application');
+            }
+            return health;
         } catch (error) {
             throw new Error(`Server unavailable: ${error.message}`);
         } finally {
             clearTimeout(timeoutId);
         }
+    },
+
+    /**
+     * Регистрирует панель на сервере (см. attachToServer в main.js)
+     */
+    async attach(pid) {
+        const response = await fetch(`${this.baseUrl}/attach`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pid })
+        });
+        if (response.status === 503) return { status: 'shutting_down' };
+        if (!response.ok) throw new Error(`attach failed: ${response.status}`);
+        return await response.json();
     },
 
     /**
@@ -120,7 +158,8 @@ const API = {
             guidance_scale: settings.guidance || 7.5,
             num_steps: settings.steps || 30,
             controlnet_scale: settings.controlnetScale || 0.5,
-            seed: settings.seed || null,
+            // || превращал seed 0 в «случайный»
+            seed: Number.isFinite(settings.seed) ? settings.seed : null,
             feather: settings.feather || 0,
             expand: settings.expand || 0,
             crop_to_mask: settings.cropToMask !== false,  // default true
@@ -135,14 +174,7 @@ const API = {
         const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, this.timeout);
 
         try {
-            const response = await fetch(`${this.baseUrl}/inpaint`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(body),
-                signal: controller.signal
-            });
+            const response = await this._postWhenFree('/inpaint', body, controller.signal);
 
             clearTimeout(timeoutId);
 
@@ -186,14 +218,7 @@ const API = {
         const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, this.timeout);
 
         try {
-            const response = await fetch(`${this.baseUrl}/upscale`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(body),
-                signal: controller.signal
-            });
+            const response = await this._postWhenFree('/upscale', body, controller.signal);
 
             clearTimeout(timeoutId);
 
@@ -215,118 +240,3 @@ const API = {
         }
     }
 };
-
-/**
- * Проверяет что PNG файл полностью записан (имеет IEND чанк)
- */
-function isPngComplete(buffer) {
-    // PNG должен начинаться с сигнатуры
-    const pngSignature = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-    if (buffer.length < 8 || !buffer.slice(0, 8).equals(pngSignature)) {
-        return false;
-    }
-
-    // PNG должен заканчиваться IEND чанком
-    // IEND = 0x00 0x00 0x00 0x00 0x49 0x45 0x4E 0x44 0xAE 0x42 0x60 0x82
-    const iendSignature = Buffer.from([0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82]);
-    const tail = buffer.slice(-12);
-    return tail.slice(4).equals(iendSignature);
-}
-
-/**
- * Конвертация файла в Base64
- */
-async function fileToBase64(filePath) {
-    const fs = require('fs');
-    const { execSync } = require('child_process');
-
-    // Wait for file to be fully written by ExtendScript
-    // Large images (3000+ px) take longer to write
-    await new Promise(r => setTimeout(r, 2000));
-
-    // Force filesystem sync to flush disk buffers
-    try {
-        execSync('sync', { timeout: 5000 });
-    } catch (e) {
-        console.log('sync command failed, continuing anyway');
-    }
-
-    let attempts = 0;
-    const maxAttempts = 20;
-    let lastSize = 0;
-
-    while (attempts < maxAttempts) {
-        attempts++;
-
-        try {
-            const stats = fs.statSync(filePath);
-            if (stats.size === 0) {
-                console.log(`File empty, retry ${attempts}/${maxAttempts}: ${filePath}`);
-                await new Promise(r => setTimeout(r, 500));
-                continue;
-            }
-
-            // Check if file size is still changing (file still being written)
-            if (stats.size !== lastSize) {
-                console.log(`File size changed: ${lastSize} -> ${stats.size}, waiting...`);
-                lastSize = stats.size;
-                await new Promise(r => setTimeout(r, 1000));
-                continue;
-            }
-
-            console.log(`Reading file: ${filePath} (${stats.size} bytes)`);
-
-            // Synchronous read
-            const buffer = fs.readFileSync(filePath);
-
-            // Verify size matches
-            if (buffer.length !== stats.size) {
-                console.error(`Read mismatch: got ${buffer.length}, expected ${stats.size}, retrying...`);
-                await new Promise(r => setTimeout(r, 500));
-                continue;
-            }
-
-            // Verify PNG is complete (has IEND chunk)
-            if (filePath.endsWith('.png') && !isPngComplete(buffer)) {
-                console.log(`PNG incomplete (no IEND), retry ${attempts}/${maxAttempts}`);
-                await new Promise(r => setTimeout(r, 500));
-                continue;
-            }
-
-            const b64 = buffer.toString('base64');
-            console.log(`Buffer size: ${buffer.length}, Base64 length: ${b64.length}`);
-            return b64;
-
-        } catch (e) {
-            console.log(`File error, retry ${attempts}/${maxAttempts}: ${e.message}`);
-            await new Promise(r => setTimeout(r, 500));
-        }
-    }
-
-    throw new Error(`Failed to read file after ${maxAttempts} attempts: ${filePath}`);
-}
-
-/**
- * Сохранение Base64 в файл
- */
-async function base64ToFile(base64Data, filePath) {
-    return new Promise((resolve, reject) => {
-        const fs = require('fs');
-        const path = require('path');
-
-        // Create directory if it doesn't exist
-        const dir = path.dirname(filePath);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-
-        const buffer = Buffer.from(base64Data, 'base64');
-        fs.writeFile(filePath, buffer, (err) => {
-            if (err) {
-                reject(err);
-                return;
-            }
-            resolve(filePath);
-        });
-    });
-}

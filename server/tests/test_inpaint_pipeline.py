@@ -533,3 +533,163 @@ def test_lama_real_model_removes_object(client):
     inside = np.array(result)[350:400, 450:550].astype(int)
     background = arr[350:400, 450:550].astype(int)
     assert np.abs(inside - background).mean() < 20  # жёлтого круга нет
+
+
+# --- жизненный цикл сервера ---------------------------------------------
+
+class ServerProcess:
+    """uvicorn в отдельном процессе с быстрым сторожем панелей"""
+
+    def __init__(self, port, parent_pid=None):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        self.port = port
+        self.tmp = tempfile.mkdtemp(prefix="ae-inpaint-srv-")
+        env = {**os.environ, "TMPDIR": self.tmp, "AE_INPAINT_WATCH_INTERVAL": "0.3"}
+        if parent_pid:
+            env["AE_INPAINT_PARENT_PID"] = str(parent_pid)
+        self.proc = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(port)],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.wait_healthy()
+
+    def request(self, method, path, body=None):
+        import json
+        import urllib.request
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}", data=data, method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    def wait_healthy(self, timeout=60):
+        import time
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            assert self.proc.poll() is None, "server exited during startup"
+            try:
+                return self.request("GET", "/health")
+            except OSError:
+                time.sleep(0.2)
+        raise AssertionError("server did not become healthy")
+
+    def log(self):
+        import os
+        path = os.path.join(self.tmp, "ae-inpaint", "server.log")
+        return open(path).read() if os.path.exists(path) else ""
+
+    def kill(self):
+        import shutil
+        self.proc.kill()
+        self.proc.wait()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+def sleeper():
+    import subprocess
+    import sys
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+
+
+@pytest.mark.slow
+def test_server_exits_when_its_panel_closes():
+    import time
+    panel = sleeper()
+    server = ServerProcess(7869, parent_pid=panel.pid)
+    try:
+        time.sleep(1.5)
+        assert server.proc.poll() is None, "server died while the panel was open"
+        panel.kill()
+        panel.wait()
+        server.proc.wait(timeout=30)
+        assert "All panels are gone" in server.log()
+    finally:
+        panel.kill()
+        server.kill()
+
+
+@pytest.mark.slow
+def test_server_stays_while_another_panel_is_attached():
+    """Сервер, переиспользованный второй панелью, не должен умереть, когда
+    закрывается первая (запустившая) панель."""
+    import time
+    first, second = sleeper(), sleeper()
+    server = ServerProcess(7870, parent_pid=first.pid)
+    try:
+        assert server.request("POST", "/attach", {"pid": second.pid})["panels"] == 2
+        first.kill()
+        first.wait()
+        time.sleep(2)
+        assert server.proc.poll() is None, "server died while the second panel was open"
+        assert server.request("GET", "/health")["status"] == "ok"
+        second.kill()
+        second.wait()
+        server.proc.wait(timeout=30)
+    finally:
+        first.kill()
+        second.kill()
+        server.kill()
+
+
+@pytest.mark.slow
+def test_manually_started_server_keeps_running():
+    """start_server.sh не передаёт PID панели — сервер не выключается, даже
+    если панель подключилась и закрылась."""
+    import time
+    panel = sleeper()
+    server = ServerProcess(7871)
+    try:
+        assert server.request("POST", "/attach", {"pid": panel.pid})["status"] == "unmanaged"
+        panel.kill()
+        panel.wait()
+        time.sleep(1.5)
+        assert server.proc.poll() is None
+    finally:
+        panel.kill()
+        server.kill()
+
+
+@pytest.mark.slow
+def test_attach_rejects_dead_and_init_pids():
+    import urllib.error
+    panel = sleeper()
+    server = ServerProcess(7872, parent_pid=panel.pid)
+    try:
+        for pid in (1, 999999):
+            with pytest.raises(urllib.error.HTTPError) as e:
+                server.request("POST", "/attach", {"pid": pid})
+            assert e.value.code in (400, 422)
+    finally:
+        panel.kill()
+        server.kill()
+
+
+@pytest.mark.slow
+def test_real_esrgan_upscale_keeps_alpha():
+    """Настоящий Real-ESRGAN (веса anime уже лежат в server/models). Раньше
+    падал на импорте basicsr с новым torchvision."""
+    from engines.upscale_engine import UpscaleEngine, _patch_torchvision_for_basicsr
+
+    _patch_torchvision_for_basicsr()
+    pytest.importorskip("realesrgan")
+
+    eng = UpscaleEngine(device="cpu")
+    if not (eng.models_dir / "RealESRGAN_x4plus_anime_6B.pth").exists():
+        pytest.skip("anime weights not downloaded")
+    arr = np.zeros((48, 64, 4), np.uint8)
+    arr[8:40, 8:56] = [200, 80, 40, 255]
+    out = eng.upscale(Image.fromarray(arr, "RGBA"), scale=4, model_type="anime")
+
+    assert out.mode == "RGBA" and out.size == (256, 192)
+    a = np.array(out)
+    assert a[96, 128, 3] == 255 and a[4, 4, 3] == 0
+    assert abs(int(a[96, 128, 0]) - 200) < 30
