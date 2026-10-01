@@ -176,17 +176,17 @@ def _luma(rgb: np.ndarray) -> np.ndarray:
 
 # Остаток зерна меряется относительно локального среднего на этом масштабе
 GRAIN_RESIDUAL_SIGMA = 3.0
-# Статистика считается по участку не больше этого (стороны в px) — хватает
-# для оценки, а на 4K-масках экономит ~секунду
+# Статистика заливки считается по участку не больше этого (стороны в px) —
+# хватает для оценки, а на 4K-масках экономит ~полсекунды
 GRAIN_STATS_MAX_SIDE = 1024
 
 
-def _stats_window(sel: np.ndarray, margin: int = 0) -> Tuple[slice, slice]:
+def _stats_window(sel: np.ndarray) -> Tuple[slice, slice]:
     """Окно ≤ GRAIN_STATS_MAX_SIDE вокруг центра выбранных пикселей"""
     ys, xs = np.nonzero(sel)
     h, w = sel.shape
-    y1, y2 = max(0, ys.min() - margin), min(h, ys.max() + 1 + margin)
-    x1, x2 = max(0, xs.min() - margin), min(w, xs.max() + 1 + margin)
+    y1, y2 = ys.min(), ys.max() + 1
+    x1, x2 = xs.min(), xs.max() + 1
     half = GRAIN_STATS_MAX_SIDE // 2
     if y2 - y1 > GRAIN_STATS_MAX_SIDE:
         cy = (y1 + y2) // 2
@@ -288,8 +288,9 @@ def _regrain(gen: np.ndarray, orig: np.ndarray, comp: np.ndarray, alpha: Optiona
     if not region.any():
         return gen
 
-    win = _stats_window(region, margin=64)
-    out_stats = _grain_stats(orig[win], ring[win])
+    # Окружение — по всему кропу: окно вокруг центра у большой маски
+    # целиком попадало внутрь неё, и зерно не добавлялось вовсе
+    out_stats = _grain_stats(orig, ring)
     if out_stats is None:
         return gen
     cov_out, rho1 = out_stats
@@ -320,7 +321,7 @@ def _regrain(gen: np.ndarray, orig: np.ndarray, comp: np.ndarray, alpha: Optiona
     if var_add > 0 and soft.any():
         cs = c[soft]
         k2 = ((2.0 / cs - 1.0) * var_out - var_in) / var_add
-        k[soft] = np.sqrt(np.clip(k2, 1.0, 9.0))
+        k[soft] = np.sqrt(np.clip(k2, 1.0, 25.0))
 
     gen += noise * (k * region)[..., None]
     np.clip(gen, 0, 255, out=gen)

@@ -359,6 +359,20 @@ def test_regrain_after_downscale(client, monkeypatch):
     assert 0.6 * outside < inside < 1.4 * outside
 
 
+def test_regrain_on_huge_mask(client, monkeypatch):
+    """Маска диаметром >1400px на 4K: окно статистики вокруг центра попадало
+    целиком внутрь маски, и зерно не добавлялось."""
+    monkeypatch.setattr(main, "lama_engine", StubEngine(max_resolution=None, fill="flat"))
+    rng = np.random.default_rng(18)
+    arr = np.clip(120 + np.repeat(rng.normal(0, 6, (2160, 3840, 1)), 3, axis=2), 0, 255).astype(np.uint8)
+    mask = rect_mask(3840, 2160, (600, 200, 3300, 1950))
+
+    result = np.array(result_of(post(client, Image.fromarray(arr), mask, mode="remove")))
+
+    ratio = grain_std(result[800:1400, 1600:2400]) / grain_std(arr[20:180, 100:3700])
+    assert 0.8 < ratio < 1.25
+
+
 def test_no_regrain_on_flat_art(client, monkeypatch):
     """Плоская заливка (манхва) — шум добавлять нечего."""
     monkeypatch.setattr(main, "ai_engine", StubEngine(max_resolution=512, fill="flat"))
