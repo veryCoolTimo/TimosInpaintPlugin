@@ -54,10 +54,12 @@ echo ""
 # Включаем режим разработки для CEP (отключает проверку подписи)
 echo "Enabling CEP debug mode..."
 
-# Для разных версий macOS
-defaults write com.adobe.CSXS.11 PlayerDebugMode 1 2>/dev/null || true
-defaults write com.adobe.CSXS.10 PlayerDebugMode 1 2>/dev/null || true
-defaults write com.adobe.CSXS.9 PlayerDebugMode 1 2>/dev/null || true
+# Флаг ставится для каждой версии CEP отдельно: AE 2024 — CEP 11,
+# AE 2025/2026 — CEP 12. Без флага своей версии AE молча не показывает
+# неподписанную панель в Window > Extensions.
+for v in 9 10 11 12 13; do
+    defaults write "com.adobe.CSXS.$v" PlayerDebugMode 1 2>/dev/null || true
+done
 
 echo ""
 echo "=== Installation complete ==="

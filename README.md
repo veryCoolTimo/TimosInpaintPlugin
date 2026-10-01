@@ -8,7 +8,7 @@ AI inpainting for After Effects. Remove objects and clean backgrounds.
   server will run elsewhere but engines fall back to CPU and haven't been verified.
 - macOS 14 (Sonoma) or newer for AI Gen (FLUX.2 klein runs in bfloat16 on
   the Apple GPU); 24 GB+ unified memory recommended (~16 GB of weights)
-- After Effects 2024+
+- After Effects 2024, 2025 or 2026
 - Python 3.10 or 3.11 (`brew install python@3.11`; 3.12+ can't install
   the Pillow version LaMa needs)
 

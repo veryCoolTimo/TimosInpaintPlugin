@@ -587,13 +587,12 @@ async function handleUpscale() {
 
 function handleToggleDebugMode() {
     const { exec } = require('child_process');
-    exec('defaults read com.adobe.CSXS.11 PlayerDebugMode 2>/dev/null || echo "0"', (err, stdout) => {
+    exec('defaults read com.adobe.CSXS.12 PlayerDebugMode 2>/dev/null || echo "0"', (err, stdout) => {
         const newVal = stdout.trim() === '1' ? '0' : '1';
-        const cmds = [
-            `defaults write com.adobe.CSXS.11 PlayerDebugMode ${newVal}`,
-            `defaults write com.adobe.CSXS.10 PlayerDebugMode ${newVal}`,
-            `defaults write com.adobe.CSXS.9 PlayerDebugMode ${newVal}`
-        ].join(' && ');
+        // CEP 11 — AE 2024, CEP 12 — AE 2025/2026
+        const cmds = [9, 10, 11, 12, 13]
+            .map(v => `defaults write com.adobe.CSXS.${v} PlayerDebugMode ${newVal}`)
+            .join(' && ');
         exec(cmds, () => {
             UI.setDebugLabel(newVal === '1');
             log(`CEP Debug ${newVal === '1' ? 'enabled' : 'disabled'}. Restart AE.`, 'success');
