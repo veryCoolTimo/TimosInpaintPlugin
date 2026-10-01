@@ -13,6 +13,32 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _patch_torchvision_for_basicsr() -> None:
+    """
+    basicsr 1.4.2 (последняя версия, от неё зависит realesrgan) импортирует
+    torchvision.transforms.functional_tensor, который удалён в torchvision
+    0.17. С зафиксированным torchvision 0.20 импорт падал, и апскейл не
+    работал вообще. Подставляем модуль-алиас с единственной нужной basicsr
+    функцией rgb_to_grayscale.
+    """
+    import sys
+    import types
+
+    name = "torchvision.transforms.functional_tensor"
+    if name in sys.modules:
+        return
+    try:
+        import torchvision.transforms.functional_tensor  # noqa: F401 — старый torchvision
+        return
+    except ImportError:
+        pass
+    from torchvision.transforms import functional
+
+    shim = types.ModuleType(name)
+    shim.rgb_to_grayscale = functional.rgb_to_grayscale
+    sys.modules[name] = shim
+
+
 class UpscaleEngine:
     """
     Апскейлер на основе Real-ESRGAN.
@@ -103,6 +129,7 @@ class UpscaleEngine:
 
         logger.info(f"Loading Real-ESRGAN model: {model_type}")
 
+        _patch_torchvision_for_basicsr()
         from basicsr.archs.rrdbnet_arch import RRDBNet
         from realesrgan import RealESRGANer
 
