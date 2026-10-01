@@ -24,3 +24,6 @@ AE Inpaint Results/
 _AI_CACHE/
 _AI_OUT/
 CLAUDE.md
+
+# CEP remote-debug config (local)
+extension/.debug
